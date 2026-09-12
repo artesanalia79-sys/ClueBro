@@ -10,6 +10,7 @@
  */
 import { ObservationSchema, type ContextEvent, type Observation } from "@contracts";
 import { DEFAULT_POLICY_CONFIG, emptyPolicyState, evaluate } from "./policy";
+import { parseVeto } from "./index";
 import { check, report } from "../../scripts/expect";
 
 const AT = "2026-09-12T14:00:00.000Z";
@@ -115,6 +116,45 @@ check(
   "an unlisted surface is off limits",
   !wrongSurface.act && wrongSurface.reason === "surface_not_allowed",
 );
+
+const answeredWindow = [
+  event({ event_id: "question", actor: { actor_id: "ASKER", display_name: "Ana", is_agent: false }, text: "Did the deploy go out?" }),
+  event({
+    event_id: "answer",
+    actor: { actor_id: "REPLIER", display_name: "Luis", is_agent: false },
+    text: "Yes, I checked the pipeline and the deploy completed.",
+  }),
+];
+const answered = evaluate(
+  observation({ evidence: [{ event_id: "question", actor_id: "ASKER", quote: "Did the deploy go out?" }] }),
+  answeredWindow,
+  emptyPolicyState(),
+  config,
+  now,
+);
+check(
+  "a human answer after the cited question keeps the agent silent",
+  !answered.act && answered.reason === "already_answered_by_human",
+);
+
+const unanswered = evaluate(
+  observation({ evidence: [{ event_id: "question", actor_id: "ASKER", quote: "Did the deploy go out?" }] }),
+  [
+    answeredWindow[0]!,
+    event({
+      event_id: "deferred",
+      actor: { actor_id: "REPLIER", display_name: "Luis", is_agent: false },
+      text: "Let me pull that up before I answer.",
+    }),
+  ],
+  emptyPolicyState(),
+  config,
+  now,
+);
+check("a deferred answer does not suppress a useful reply", unanswered.act);
+
+const malformedVeto = parseVeto('{"intervene":false,"reason_code":"not_a_reason"}');
+check("an invalid model veto fails open", malformedVeto.intervene);
 
 // --- speaking --------------------------------------------------------------
 

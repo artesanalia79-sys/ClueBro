@@ -18,7 +18,7 @@ import {
  * The model composes wording. It never decides whether to speak.
  */
 
-export const POLICY_VERSION = "policy-0.1.0";
+export const POLICY_VERSION = "policy-0.2.0";
 
 export interface PolicyConfig {
   minConfidence: number;
@@ -84,6 +84,41 @@ const prefersPrivate = (o: Observation): boolean =>
 const secondsSince = (then: Date | undefined, now: Date): number =>
   then === undefined ? Number.POSITIVE_INFINITY : (now.getTime() - then.getTime()) / 1000;
 
+const answersQuestion = (text: string): boolean => {
+  const words = text.match(/[\p{L}\p{N}]+/gu) ?? [];
+  const defersAnAnswer =
+    /\b(let me|i(?:'ll| will)|we(?:'ll| will)|checking|check and|pull that up|hold on|one moment|be right back)\b/i.test(
+      text,
+    );
+  return words.length >= 4 && !defersAnAnswer;
+};
+
+const answeredByAnotherPerson = (
+  observation: Observation,
+  window: readonly ContextEvent[],
+): ContextEvent | null => {
+  if (observation.kind !== "unanswered_question") return null;
+
+  const evidenceIds = new Set(observation.evidence.map((e) => e.event_id));
+  const evidenceIndex = window.reduce(
+    (latest, event, index) => (evidenceIds.has(event.event_id) ? index : latest),
+    -1,
+  );
+  const question = evidenceIndex >= 0 ? window[evidenceIndex] : undefined;
+  if (!question) return null;
+
+  return (
+    window
+      .slice(evidenceIndex + 1)
+      .find(
+        (event) =>
+          !event.actor.is_agent &&
+          event.actor.actor_id !== question.actor.actor_id &&
+          answersQuestion(event.text),
+      ) ?? null
+  );
+};
+
 export function evaluate(
   observation: Observation,
   window: readonly ContextEvent[],
@@ -126,6 +161,15 @@ export function evaluate(
       rationale: `Confidence ${observation.confidence.toFixed(2)} is under the ${config.minConfidence.toFixed(
         2,
       )} bar for speaking at all.`,
+    };
+  }
+
+  const humanAnswer = answeredByAnotherPerson(observation, window);
+  if (humanAnswer) {
+    return {
+      act: false,
+      reason: "already_answered_by_human",
+      rationale: `${humanAnswer.actor.display_name} added a substantive reply after the cited question, so the agent does not repeat it.`,
     };
   }
 
