@@ -128,7 +128,11 @@ const say = (actor: string, text: string, isAgent = false): ContextEvent => {
     agreed,
     say("ana", "who is actually doing the flag cleanup?"),
   ]);
-  checkEqual("asking who owns an open plan does not report it a second time", t.kind, "no_signal");
+  checkEqual(
+    "asking who owns an open plan rechecks it so policy can record a duplicate",
+    t.kind,
+    "plan_without_owner",
+  );
 }
 
 // --- honesty ---------------------------------------------------------------

@@ -30,6 +30,9 @@ export interface TimedVerdict {
 
 const silence = (note: string): TimedVerdict => ({ kind: "no_signal", confidence: 0.1, note });
 
+const asksForPlanOwner = (text: string): boolean =>
+  /\b(who(?:'s| is)?|anyone)\b.*\b(owner|owns|doing|take|responsible)\b/i.test(text);
+
 export function applyTiming(
   kind: ObservationKind,
   confidence: number,
@@ -68,6 +71,14 @@ export function applyTiming(
 
   // A search or a plan is reported once, on the line that states it.
   if (later.length > 0) {
+    const newest = humans[humans.length - 1];
+    if (kind === "plan_without_owner" && newest && asksForPlanOwner(newest.text)) {
+      return {
+        kind,
+        confidence,
+        note: "A new question asks who owns the open plan, so policy can prevent a duplicate intervention.",
+      };
+    }
     const what = kind === "information_gap" ? "search" : "plan";
     return silence(`${who}'s ${what} was already open before the newest line. Not repeating it.`);
   }
