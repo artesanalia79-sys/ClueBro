@@ -75,6 +75,8 @@ export interface DecisionLog {
     events: number;
     spoke: number;
     stayedQuiet: number;
+    /** Decisions where a model call failed and the heuristics stood in. */
+    degraded: number;
     byReason: Record<string, number>;
     /**
      * Silence reasons only. Kept apart from byReason because "how many
@@ -101,6 +103,15 @@ export interface DecisionLogOptions {
  * The rationale usually opens by restating the observation, which puts the
  * same sentence on screen twice. Print only what the rationale adds.
  */
+/**
+ * A model call that failed leaves "(failed)" in the model name. The pipeline
+ * carries on with the heuristic prefilter, which is the right behaviour and
+ * the wrong thing to hide: a block built from regex must not look like a block
+ * built from judgement.
+ */
+const ranWithoutModel = (model: string | null | undefined): boolean =>
+  typeof model === "string" && model.endsWith("(failed)");
+
 function reasonBeyond(summary: string, rationale: string): string | null {
   const extra = rationale.startsWith(summary) ? rationale.slice(summary.length) : rationale;
   const trimmed = extra.replace(/^[\s.;:,-]+/, "").trim();
@@ -109,7 +120,7 @@ function reasonBeyond(summary: string, rationale: string): string | null {
 
 export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
   const verbose = options.verbose ?? false;
-  const counts = { events: 0, spoke: 0, stayedQuiet: 0 };
+  const counts = { events: 0, spoke: 0, stayedQuiet: 0, degraded: 0 };
   const byReason: Record<string, number> = {};
   const bySilenceReason: Record<string, number> = {};
   let sequence = 0;
@@ -126,9 +137,12 @@ export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
     );
 
     const kindColor = obs.kind === "no_signal" ? C.grey : C.magenta;
+    const sawMark = ranWithoutModel(obs.detector.model)
+      ? ` ${paint(C.yellow, "[heuristics only]")}`
+      : "";
     console.log(
       `  ${paint(C.grey, "saw")}      ${paint(kindColor, obs.kind)} ` +
-        `${paint(C.grey, `(${obs.confidence.toFixed(2)})`)} ${truncate(obs.summary, 96)}`,
+        `${paint(C.grey, `(${obs.confidence.toFixed(2)})`)} ${truncate(obs.summary, 96)}${sawMark}`,
     );
 
     if (dec.act && dec.delivery && dec.draft) {
@@ -204,6 +218,12 @@ export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
       counts.events++;
       if (record.decision.act) counts.spoke++;
       else counts.stayedQuiet++;
+      if (
+        ranWithoutModel(record.observation.detector.model) ||
+        ranWithoutModel(record.decision.decided_by.model)
+      ) {
+        counts.degraded++;
+      }
       byReason[record.decision.reason_code] = (byReason[record.decision.reason_code] ?? 0) + 1;
       if (!record.decision.act) {
         bySilenceReason[record.decision.reason_code] =
@@ -237,6 +257,19 @@ export function printSummary(log: DecisionLog): void {
     for (const [reason, count] of reasons) {
       console.log(`    ${String(count).padStart(3)}  ${reason}`);
     }
+  }
+
+  // Never let a run that fell back to regex be mistaken for a run that used
+  // judgement. The confidences above are crude priors when this fires.
+  if (s.degraded > 0) {
+    console.log(
+      `\n  ${paint(C.red, "!")} ${paint(C.bold, `${s.degraded} of ${s.events}`)} ` +
+        `decision(s) ran without the model. Those confidences and summaries come
+` +
+        `    from the heuristic prefilter, not from judgement. See the warning above
+` +
+        `    for why the call failed.`,
+    );
   }
   console.log("");
 }
