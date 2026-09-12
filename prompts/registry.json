@@ -1,0 +1,28 @@
+{
+  "prompts": {
+    "detector.conversation_scan": {
+      "active": "v1",
+      "dir": "detector",
+      "slug": "conversation_scan",
+      "description": "Reads a window of conversation and names what is going on, including nothing."
+    },
+    "policy.should_intervene": {
+      "active": "v1",
+      "dir": "policy",
+      "slug": "should_intervene",
+      "description": "Veto gate. The thresholds already passed, this asks whether speaking is actually worth it."
+    },
+    "compose.channel_reply": {
+      "active": "v1",
+      "dir": "compose",
+      "slug": "channel_reply",
+      "description": "Writes a short public reply for a group surface."
+    },
+    "compose.direct_message": {
+      "active": "v1",
+      "dir": "compose",
+      "slug": "direct_message",
+      "description": "Writes a private message to one person."
+    }
+  }
+}

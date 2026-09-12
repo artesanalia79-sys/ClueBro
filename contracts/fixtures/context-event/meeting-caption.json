@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "event_id": "browser:meet-xyz-abc:cap-0087",
+  "source": {
+    "adapter": "browser",
+    "surface_id": "meet-xyz-abc",
+    "surface_type": "live_meeting",
+    "surface_label": "Interview - Backend Engineer"
+  },
+  "actor": {
+    "actor_id": "cand-01",
+    "display_name": "Candidate",
+    "is_agent": false,
+    "role": "candidate"
+  },
+  "occurred_at": "2026-09-12T14:20:02.000Z",
+  "text": "I led the migration off the monolith, mostly on the payments side.",
+  "thread_id": null,
+  "reply_to_event_id": null,
+  "mentions": [],
+  "metadata": { "caption_offset_ms": 542000, "confidence": 0.91 }
+}

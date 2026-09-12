@@ -1,0 +1,170 @@
+[
+  {
+    "schema_version": "1.0.0",
+    "event_id": "browser:meet-abc-def:cap-0001",
+    "source": {
+      "adapter": "browser",
+      "surface_id": "meet-abc-def",
+      "surface_type": "live_meeting",
+      "surface_label": "Interview - Backend Engineer"
+    },
+    "actor": {
+      "actor_id": "U-DANA",
+      "display_name": "Dana",
+      "is_agent": false,
+      "role": "interviewer"
+    },
+    "occurred_at": "2026-09-12T14:20:00.000Z",
+    "text": "so tell me about the migration you led",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "caption_offset_ms": 20000
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "browser:meet-abc-def:cap-0002",
+    "source": {
+      "adapter": "browser",
+      "surface_id": "meet-abc-def",
+      "surface_type": "live_meeting",
+      "surface_label": "Interview - Backend Engineer"
+    },
+    "actor": {
+      "actor_id": "U-SAM",
+      "display_name": "Sam",
+      "is_agent": false,
+      "role": "candidate"
+    },
+    "occurred_at": "2026-09-12T14:20:30.000Z",
+    "text": "I led the move off the monolith, mostly the payments side",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "caption_offset_ms": 40000
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "browser:meet-abc-def:cap-0003",
+    "source": {
+      "adapter": "browser",
+      "surface_id": "meet-abc-def",
+      "surface_type": "live_meeting",
+      "surface_label": "Interview - Backend Engineer"
+    },
+    "actor": {
+      "actor_id": "U-SAM",
+      "display_name": "Sam",
+      "is_agent": false,
+      "role": "candidate"
+    },
+    "occurred_at": "2026-09-12T14:21:10.000Z",
+    "text": "one thing I wanted to ask, what does the on-call rotation actually look like for this team?",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "caption_offset_ms": 60000
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "browser:meet-abc-def:cap-0004",
+    "source": {
+      "adapter": "browser",
+      "surface_id": "meet-abc-def",
+      "surface_type": "live_meeting",
+      "surface_label": "Interview - Backend Engineer"
+    },
+    "actor": {
+      "actor_id": "U-DANA",
+      "display_name": "Dana",
+      "is_agent": false,
+      "role": "interviewer"
+    },
+    "occurred_at": "2026-09-12T14:21:38.000Z",
+    "text": "good question",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "caption_offset_ms": 80000
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "browser:meet-abc-def:cap-0005",
+    "source": {
+      "adapter": "browser",
+      "surface_id": "meet-abc-def",
+      "surface_type": "live_meeting",
+      "surface_label": "Interview - Backend Engineer"
+    },
+    "actor": {
+      "actor_id": "U-DANA",
+      "display_name": "Dana",
+      "is_agent": false,
+      "role": "interviewer"
+    },
+    "occurred_at": "2026-09-12T14:21:52.000Z",
+    "text": "let me pull that up",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "caption_offset_ms": 100000
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "browser:meet-abc-def:cap-0006",
+    "source": {
+      "adapter": "browser",
+      "surface_id": "meet-abc-def",
+      "surface_type": "live_meeting",
+      "surface_label": "Interview - Backend Engineer"
+    },
+    "actor": {
+      "actor_id": "U-SAM",
+      "display_name": "Sam",
+      "is_agent": false,
+      "role": "candidate"
+    },
+    "occurred_at": "2026-09-12T14:22:10.000Z",
+    "text": "no worries",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "caption_offset_ms": 120000
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "browser:meet-abc-def:cap-0007",
+    "source": {
+      "adapter": "browser",
+      "surface_id": "meet-abc-def",
+      "surface_type": "live_meeting",
+      "surface_label": "Interview - Backend Engineer"
+    },
+    "actor": {
+      "actor_id": "U-DANA",
+      "display_name": "Dana",
+      "is_agent": false,
+      "role": "interviewer"
+    },
+    "occurred_at": "2026-09-12T14:22:40.000Z",
+    "text": "so back to payments, what broke first in the migration",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "caption_offset_ms": 140000
+    }
+  }
+]

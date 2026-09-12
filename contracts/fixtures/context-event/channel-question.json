@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "event_id": "slack:C09TEAM:1789012991.000200",
+  "source": {
+    "adapter": "slack",
+    "surface_id": "C09TEAM",
+    "surface_type": "group",
+    "surface_label": "#product"
+  },
+  "actor": {
+    "actor_id": "U01ANA",
+    "display_name": "Ana",
+    "is_agent": false
+  },
+  "occurred_at": "2026-09-12T14:03:11.000Z",
+  "text": "does anyone know if the staging deploy from last night actually went out?",
+  "thread_id": null,
+  "reply_to_event_id": null,
+  "mentions": [],
+  "metadata": { "slack_ts": "1789012991.000200", "slack_team": "T09HACK" }
+}

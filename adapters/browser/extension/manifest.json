@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "ClueBro meeting support",
+  "version": "0.1.0",
+  "description": "Shows contextual support during a meeting, with sources, to the person using it.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

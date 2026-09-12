@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "event_id": "slack:C09TEAM:1789012991.000200",
+  "source": {
+    "adapter": "slack",
+    "surface_id": "C09TEAM",
+    "surface_type": "group"
+  },
+  "occurred_at": "2026-09-12T14:03:11.000Z",
+  "text": "no actor on this one, the adapter dropped it",
+  "metadata": {}
+}

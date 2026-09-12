@@ -1,0 +1,186 @@
+[
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221600.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U02LUIS",
+      "display_name": "Luis",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:00:00.000Z",
+    "text": "morning",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221600.000000"
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221620.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U01ANA",
+      "display_name": "Ana",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:00:20.000Z",
+    "text": "morning",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221620.000000"
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221660.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U03MAR",
+      "display_name": "Mar",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:01:00.000Z",
+    "text": "that deploy gif in the other channel is amazing",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221660.000000"
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221690.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U02LUIS",
+      "display_name": "Luis",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:01:30.000Z",
+    "text": "haha yes",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221690.000000"
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221720.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U01ANA",
+      "display_name": "Ana",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:02:00.000Z",
+    "text": "the coffee machine on floor 3 is fixed finally",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221720.000000"
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221760.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U03MAR",
+      "display_name": "Mar",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:02:40.000Z",
+    "text": "nice",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221760.000000"
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221790.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U02LUIS",
+      "display_name": "Luis",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:03:10.000Z",
+    "text": "thanks for the review by the way, merged it",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221790.000000"
+    }
+  },
+  {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09PRODUCT:1789221830.000000",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09PRODUCT",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": {
+      "actor_id": "U01ANA",
+      "display_name": "Ana",
+      "is_agent": false
+    },
+    "occurred_at": "2026-09-12T14:03:50.000Z",
+    "text": "same",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": {
+      "slack_ts": "1789221830.000000"
+    }
+  }
+]

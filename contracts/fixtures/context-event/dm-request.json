@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "event_id": "slack:D09MAR:1789013120.000100",
+  "source": {
+    "adapter": "slack",
+    "surface_id": "D09MAR",
+    "surface_type": "direct",
+    "surface_label": "DM with Mar"
+  },
+  "actor": {
+    "actor_id": "U03MAR",
+    "display_name": "Mar",
+    "is_agent": false
+  },
+  "occurred_at": "2026-09-12T14:05:20.000Z",
+  "text": "I cannot find the Q2 churn number anywhere, do you have it?",
+  "thread_id": null,
+  "reply_to_event_id": null,
+  "mentions": [],
+  "metadata": { "slack_ts": "1789013120.000100" }
+}

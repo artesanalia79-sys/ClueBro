@@ -1,0 +1,37 @@
+{
+  "_comment": "Paste this into api.slack.com/apps -> Create New App -> From an app manifest. It grants read access to conversation history and the ability to post in a channel or open a DM. There is no app_mention subscription and no slash command: this agent is never invoked, it decides on its own.",
+  "display_information": {
+    "name": "ClueBro",
+    "description": "Reads the room. Speaks only when it has something useful to add.",
+    "background_color": "#1f2933"
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "ClueBro",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:write",
+        "chat:write",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": ["message.channels", "message.groups", "message.im"]
+    },
+    "interactivity": { "is_enabled": false },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}

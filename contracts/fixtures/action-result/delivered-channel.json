@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "result_id": "res_22222222-aaaa-4bbb-8ccc-000000000001",
+  "decision_id": "dec_11111111-aaaa-4bbb-8ccc-000000000001",
+  "status": "delivered",
+  "delivered_at": "2026-09-12T14:04:24.000Z",
+  "delivery_ref": {
+    "adapter": "slack",
+    "surface_id": "C09TEAM",
+    "external_id": "1789013064.000700"
+  },
+  "error": null,
+  "latency_ms": 318
+}

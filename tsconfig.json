@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "moduleDetection": "force",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@contracts": ["contracts/src/index.ts"],
+      "@contracts/*": ["contracts/src/*"],
+      "@core/*": ["core/*"],
+      "@adapters/*": ["adapters/*"],
+      "@harness/*": ["harness/*"],
+      "@prompts/*": ["prompts/*"]
+    }
+  },
+  "include": ["contracts", "core", "adapters", "harness", "prompts", "scripts"],
+  "exclude": ["node_modules", "adapters/browser/extension"]
+}

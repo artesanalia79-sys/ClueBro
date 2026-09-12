@@ -1,0 +1,45 @@
+name: ci
+
+# Speed over coverage. This must finish in under two minutes or people will
+# stop waiting for it, and a check nobody waits for protects nothing.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      # 1. Types. This is the lint: no ESLint config to argue about.
+      - name: typecheck
+        run: npm run typecheck
+
+      # 2. The architecture rule. Fails if the core learns what Slack is.
+      - name: boundaries
+        run: npm run check:boundaries
+
+      # 3. Every contract against its fixtures, including the fixtures that
+      #    must be REJECTED.
+      - name: contracts
+        run: npm run validate:contracts
+
+      # 4. Each owner's own check.ts, discovered automatically so nobody has
+      #    to edit a shared file to register a test.
+      - name: units
+        run: npm run check:units
+
+      # 5. The whole pipeline on three saved conversations. No network, no
+      #    keys: the fake provider is deterministic.
+      - name: smoke
+        run: npm run smoke

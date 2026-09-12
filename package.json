@@ -1,0 +1,41 @@
+{
+  "name": "cluebro",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A passive agent that lives where people already work. Channel-agnostic core, pluggable adapters.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter slack",
+    "dev:dry": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter slack --dry-run",
+    "replay": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter replay --dry-run",
+    "replay:demo": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter replay --transcript fixtures/transcripts/demo-main.json --dry-run --speed 6",
+    "replay:silence": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter replay --transcript fixtures/transcripts/silence-only.json --dry-run",
+    "replay:meet": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter replay --transcript fixtures/transcripts/meet-interview.json --dry-run",
+    "smoke": "tsx harness/bin/smoke.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "npm run typecheck",
+    "check:boundaries": "tsx scripts/check-boundaries.ts",
+    "check:units": "tsx scripts/run-checks.ts",
+    "validate:contracts": "tsx contracts/bin/validate.ts",
+    "prompt:eval": "tsx prompts/bin/eval.ts",
+    "prompt:diff": "tsx prompts/bin/diff.ts",
+    "clock:start": "tsx scripts/clock.ts start",
+    "clock": "tsx scripts/clock.ts show",
+    "fmt": "prettier --write \"**/*.{ts,json,md}\"",
+    "ci": "npm run typecheck && npm run check:boundaries && npm run validate:contracts && npm run check:units && npm run smoke"
+  },
+  "dependencies": {
+    "@slack/bolt": "^4.0.0",
+    "openai": "^4.70.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "prettier": "^3.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

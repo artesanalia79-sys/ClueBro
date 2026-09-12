@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "result_id": "res_22222222-aaaa-4bbb-8ccc-000000000002",
+  "decision_id": "dec_11111111-aaaa-4bbb-8ccc-000000000002",
+  "status": "dry_run",
+  "delivered_at": null,
+  "delivery_ref": { "adapter": "replay", "surface_id": "C09TEAM", "external_id": null },
+  "error": null,
+  "latency_ms": 0
+}

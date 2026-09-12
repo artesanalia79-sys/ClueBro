@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "observation_id": "obs_bad_0001",
+  "window": {
+    "surface_id": "C09TEAM",
+    "surface_type": "group",
+    "first_event_id": "e1",
+    "last_event_id": "e2",
+    "event_count": 2,
+    "started_at": "2026-09-12T14:03:59.000Z",
+    "ended_at": "2026-09-12T14:04:05.000Z"
+  },
+  "kind": "unanswered_question",
+  "summary": "confidence above one, which means somebody is multiplying instead of clamping",
+  "evidence": [],
+  "subject_actor_id": null,
+  "confidence": 1.4,
+  "detector": { "name": "llm-detector", "version": "0.1.0" },
+  "created_at": "2026-09-12T14:04:06.000Z"
+}

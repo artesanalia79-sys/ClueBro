@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "event_id": "slack:C09TEAM:1789012999.000400",
+  "source": {
+    "adapter": "slack",
+    "surface_id": "C09TEAM",
+    "surface_type": "group",
+    "surface_label": "#product"
+  },
+  "actor": {
+    "actor_id": "U02LUIS",
+    "display_name": "Luis",
+    "is_agent": false
+  },
+  "occurred_at": "2026-09-12T14:03:59.000Z",
+  "text": "haha that gif is perfect",
+  "thread_id": null,
+  "reply_to_event_id": null,
+  "mentions": [],
+  "metadata": { "slack_ts": "1789012999.000400" }
+}

@@ -1,0 +1,34 @@
+/* The panel is deliberately visible and deliberately unmistakable. This is
+   consented support: the person using it knows it is there, and anyone
+   looking at their screen can see it too. */
+#cluebro-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  width: 320px;
+  max-height: 50vh;
+  overflow-y: auto;
+  z-index: 2147483647;
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #e6e9ef;
+  background: #1f2933;
+  border: 1px solid #3b4754;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+#cluebro-panel header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid #3b4754;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+#cluebro-panel .state { font-weight: 400; color: #9aa5b1; font-size: 11px; }
+#cluebro-panel .card { padding: 10px 12px; border-bottom: 1px solid #2b3642; }
+#cluebro-panel .card:last-child { border-bottom: 0; }
+#cluebro-panel .body { margin: 0 0 6px; }
+#cluebro-panel .why { color: #9aa5b1; font-size: 11px; margin: 0 0 6px; }
+#cluebro-panel .sources { margin: 0; padding-left: 16px; color: #7fb3d5; font-size: 11px; }
+#cluebro-panel .empty { padding: 12px; color: #9aa5b1; }

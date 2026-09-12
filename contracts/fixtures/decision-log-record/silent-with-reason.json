@@ -1,0 +1,87 @@
+{
+  "schema_version": "1.0.0",
+  "record_id": "rec_33333333-aaaa-4bbb-8ccc-000000000001",
+  "trace_id": "trc_slack_C09TEAM_1789012999.000400",
+  "logged_at": "2026-09-12T14:04:07.000Z",
+  "trigger_event": {
+    "schema_version": "1.0.0",
+    "event_id": "slack:C09TEAM:1789012999.000400",
+    "source": {
+      "adapter": "slack",
+      "surface_id": "C09TEAM",
+      "surface_type": "group",
+      "surface_label": "#product"
+    },
+    "actor": { "actor_id": "U02LUIS", "display_name": "Luis", "is_agent": false },
+    "occurred_at": "2026-09-12T14:03:59.000Z",
+    "text": "haha that gif is perfect",
+    "thread_id": null,
+    "reply_to_event_id": null,
+    "mentions": [],
+    "metadata": { "slack_ts": "1789012999.000400" }
+  },
+  "observation": {
+    "schema_version": "1.0.0",
+    "observation_id": "obs_0c4d5e60-3333-4aaa-9bbb-0123456789ab",
+    "window": {
+      "surface_id": "C09TEAM",
+      "surface_type": "group",
+      "first_event_id": "slack:C09TEAM:1789012999.000400",
+      "last_event_id": "slack:C09TEAM:1789013005.000500",
+      "event_count": 2,
+      "started_at": "2026-09-12T14:03:59.000Z",
+      "ended_at": "2026-09-12T14:04:05.000Z"
+    },
+    "kind": "no_signal",
+    "summary": "Two messages of banter about a gif. Nothing anyone needs.",
+    "evidence": [],
+    "subject_actor_id": null,
+    "confidence": 0.12,
+    "detector": {
+      "name": "heuristic-prefilter",
+      "version": "0.1.0",
+      "prompt_id": null,
+      "prompt_version": null,
+      "model": null,
+      "latency_ms": 1
+    },
+    "created_at": "2026-09-12T14:04:06.000Z"
+  },
+  "decision": {
+    "schema_version": "1.0.0",
+    "decision_id": "dec_11111111-aaaa-4bbb-8ccc-000000000003",
+    "observation_id": "obs_0c4d5e60-3333-4aaa-9bbb-0123456789ab",
+    "act": false,
+    "confidence": 0.12,
+    "reason_code": "no_actionable_signal",
+    "rationale": "Banter about a gif. Nobody is blocked and nobody asked anything.",
+    "delivery": null,
+    "draft": null,
+    "policy": {
+      "version": "policy-0.1.0",
+      "min_confidence": 0.62,
+      "min_confidence_public": 0.72,
+      "cooldown_seconds": 120,
+      "cooldown_active": false
+    },
+    "decided_by": {
+      "engine": "policy-action-engine",
+      "prompt_id": null,
+      "prompt_version": null,
+      "model": null,
+      "latency_ms": 2
+    },
+    "created_at": "2026-09-12T14:04:07.000Z"
+  },
+  "result": {
+    "schema_version": "1.0.0",
+    "result_id": "res_22222222-aaaa-4bbb-8ccc-000000000004",
+    "decision_id": "dec_11111111-aaaa-4bbb-8ccc-000000000003",
+    "status": "skipped_no_action",
+    "delivered_at": null,
+    "delivery_ref": null,
+    "error": null,
+    "latency_ms": 0
+  },
+  "timings_ms": { "detect": 1, "decide": 2, "deliver": 0, "total": 3 }
+}
