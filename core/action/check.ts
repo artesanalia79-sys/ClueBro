@@ -137,6 +137,33 @@ check(
   !answered.act && answered.reason === "already_answered_by_human",
 );
 
+// Regression: length alone used to be enough, so ANY four-word reply from
+// somebody else produced already_answered_by_human. A reason code that says a
+// human answered when nobody answered is a lie in the one artefact this whole
+// product rests on, which is worse than being noisy. A reply now has to be
+// about the same thing as the question it supposedly answered.
+for (const [label, text] of [
+  ["an unrelated remark is not an answer", "The cafeteria is closed today."],
+  ["asking back is not an answer", "Can you repeat that question?"],
+  ["saying you do not know is not an answer", "No se la respuesta todavia, lo siento"],
+] as const) {
+  const outcome = evaluate(
+    observation({ evidence: [{ event_id: "question", actor_id: "ASKER", quote: "Did the deploy go out?" }] }),
+    [
+      answeredWindow[0]!,
+      event({
+        event_id: "noise",
+        actor: { actor_id: "REPLIER", display_name: "Luis", is_agent: false },
+        text,
+      }),
+    ],
+    emptyPolicyState(),
+    config,
+    now,
+  );
+  check(label, outcome.reason !== "already_answered_by_human", `got ${outcome.reason}`);
+}
+
 const unanswered = evaluate(
   observation({ evidence: [{ event_id: "question", actor_id: "ASKER", quote: "Did the deploy go out?" }] }),
   [
