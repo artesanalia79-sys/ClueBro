@@ -1,0 +1,7 @@
+# Mixed Windows and macOS team. Keep every text file LF in the working copy,
+# so a diff shows real changes instead of every line, and so run.sh does not
+# die with "\r: command not found" on somebody else's laptop.
+* text=auto eol=lf
+*.sh text eol=lf
+*.png binary
+*.jpg binary
