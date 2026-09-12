@@ -89,6 +89,10 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
   const queue = new AsyncQueue<ContextEvent>();
   const listeners = new Map<ServerResponse, string>();
   const polling = new Map<string, { at: number; frames: unknown[] }>();
+  const contextAnswers = new Map<
+    string,
+    { key: string; synthesis: { answer: string; sources: string[] } | null }
+  >();
   let server: Server | null = null;
   let stopped = false;
 
@@ -177,7 +181,36 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
           .slice(-3)
           .map((e) => e.text)
           .join(" ");
-        json(res, { hits: options.memory.search(meeting.project, recent, id) });
+        const hits = options.memory.search(meeting.project, recent, id);
+        if (hits.length === 0) {
+          json(res, { hits, synthesis: null });
+          return;
+        }
+        // The panel polls this while people talk. Answering the same set of
+        // excerpts again on every poll would spend a model call per minute to
+        // produce the same paragraph, so the answer is kept until the
+        // excerpts themselves change.
+        const key = hits.map((hit) => hit.event_id).join(",");
+        const cached = contextAnswers.get(id);
+        if (cached?.key === key) {
+          json(res, { hits, synthesis: cached.synthesis });
+          return;
+        }
+        try {
+          const synthesis =
+            (await options.answer?.(
+              `This is being discussed right now: "${recent}". What in these earlier meetings is relevant to it?`,
+              hits,
+            )) ?? null;
+          contextAnswers.set(id, { key, synthesis });
+          json(res, { hits, synthesis });
+        } catch {
+          json(res, {
+            hits,
+            synthesis: null,
+            warning: "Answer unavailable. Original matching sources are shown below.",
+          });
+        }
         return;
       }
       if (req.method === "GET" && !meetingRoute[2]) {

@@ -147,7 +147,16 @@ try {
       probe.close(() => resolve(port));
     });
   });
-  bridge = createBrowserBridge({ port, principalActorId: "owner-a", memory });
+  let answered = 0;
+  bridge = createBrowserBridge({
+    port,
+    principalActorId: "owner-a",
+    memory,
+    answer: async (_question, hits) => {
+      answered++;
+      return { answer: "Earlier: Friday launch", sources: [hits[0]!.event_id] };
+    },
+  });
   await bridge.inbound.start!();
   const base = `http://127.0.0.1:${port}`;
   const post = (path: string, body: unknown, origin?: string) =>
@@ -205,9 +214,37 @@ try {
     await (await fetch(`${base}/meetings/${session.id}/export`)).text(),
     /durable caption/,
   );
+  // The panel polls this while people talk, so it must answer on its own and
+  // must not spend a model call per poll on excerpts it already answered.
+  assert.equal(
+    (
+      await post("/captions", {
+        meeting_id: session.id,
+        caption_id: "context-trigger",
+        text: "Volvamos al lanzamiento del viernes.",
+      })
+    ).status,
+    202,
+  );
+  const contextUrl = `${base}/meetings/${session.id}/context`;
+  const context = (await (await fetch(contextUrl)).json()) as {
+    hits: unknown[];
+    synthesis: { answer: string } | null;
+  };
+  assert.ok(context.hits.length > 0, "earlier meetings in the project must be found");
+  assert.equal(
+    context.synthesis?.answer,
+    "Earlier: Friday launch",
+    "automatic context answers without anyone typing a question",
+  );
+  assert.equal(answered, 1);
+  const repeat = (await (await fetch(contextUrl)).json()) as { synthesis: { answer: string } | null };
+  assert.equal(repeat.synthesis?.answer, "Earlier: Friday launch");
+  assert.equal(answered, 1, "unchanged excerpts reuse the answer instead of asking again");
+
   assert.equal((await post(`/meetings/${session.id}/finish`, {})).status, 202);
   console.log(
-    "Meeting memory: persistence, citations, retries, isolation, vault links and bridge checks passed.",
+    "Meeting memory: persistence, citations, retries, isolation, vault links, automatic context and bridge checks passed.",
   );
 } finally {
   if (bridge) await bridge.inbound.stop!();

@@ -458,7 +458,7 @@
         const key = result.hits.map((h) => h.event_id).join(",");
         if (key && key !== lastContext) {
           lastContext = key;
-          showHits(result.hits, true);
+          showHits(result.hits, true, result.synthesis, result.warning);
         }
       })
       .catch(() => {});
