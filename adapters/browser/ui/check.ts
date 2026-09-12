@@ -238,6 +238,18 @@ try {
     auto.document.querySelector("#caption")!.textContent = "Still talking afterwards.";
     for (let i = 0; i < 4; i++) await tickAuto(1300);
     assert.equal(captions.length, afterStopping, "an explicit stop is not undone by the watcher");
+
+    // Reloading the extension kills this page's channel to it. The panel has
+    // to say what fixes that, because nothing here can fix it on its own.
+    (auto as unknown as { chrome: { runtime: { sendMessage: () => Promise<never> } } }).chrome.runtime.sendMessage =
+      () => Promise.reject(new Error("Extension context invalidated."));
+    (auto.document.querySelector("#cluebro-panel .refresh") as unknown as HTMLButtonElement).click();
+    await settleAuto();
+    assert.match(
+      auto.document.querySelector("#cluebro-panel .state")!.textContent,
+      /Reload this tab/,
+      "a stale content script tells the reader to reload",
+    );
   } finally {
     await auto.happyDOM.close();
   }

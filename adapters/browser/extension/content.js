@@ -78,12 +78,23 @@
     el(".project").value = ROOM;
   }
 
+  // Reloading the extension leaves this page running the previous content
+  // script, whose channel to it is already gone. Nothing recovers without a
+  // reload, so the panel has to say that rather than repeat the platform's
+  // wording, which reads like a crash.
+  const STALE = "ClueBro was updated. Reload this tab to keep saving.";
   async function request(path, body) {
-    const response = await chrome.runtime.sendMessage({
-      type: "cluebro-request",
-      path,
-      ...(body === undefined ? {} : { body }),
-    });
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({
+        type: "cluebro-request",
+        path,
+        ...(body === undefined ? {} : { body }),
+      });
+    } catch (error) {
+      throw new Error(/context invalidated/i.test(error?.message ?? "") ? STALE : error.message);
+    }
+    if (!response) throw new Error(STALE);
     if (response.error) throw new Error(response.error);
     if (response.status >= 400) {
       let failure = {};
