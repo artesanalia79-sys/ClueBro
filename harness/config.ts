@@ -13,6 +13,8 @@ export interface AppConfig {
   llmProvider: LlmChoice;
   openaiApiKey: string;
   openaiModel: string;
+  /** Any OpenAI-compatible endpoint. Empty means OpenAI itself. */
+  openaiBaseUrl: string;
 
   slack: {
     botToken: string;
@@ -89,6 +91,7 @@ export function loadConfig(overrides: ConfigOverrides = {}): AppConfig {
     llmProvider: provider,
     openaiApiKey: str("OPENAI_API_KEY"),
     openaiModel: str("OPENAI_MODEL", "gpt-4.1-mini"),
+    openaiBaseUrl: str("OPENAI_BASE_URL"),
 
     slack: {
       botToken: str("SLACK_BOT_TOKEN"),

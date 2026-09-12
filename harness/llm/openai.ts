@@ -12,6 +12,8 @@ import type { LlmClient, LlmRequest, LlmResponse } from "@contracts";
 export interface OpenAiOptions {
   apiKey: string;
   model: string;
+  /** Any OpenAI-compatible endpoint (OpenRouter, a local server). */
+  baseUrl?: string;
   timeoutMs?: number;
   maxRetries?: number;
 }
@@ -19,6 +21,11 @@ export interface OpenAiOptions {
 export function createOpenAiLlm(options: OpenAiOptions): LlmClient {
   const client = new OpenAI({
     apiKey: options.apiKey,
+    ...(options.baseUrl ? { baseURL: options.baseUrl } : {}),
+    // The SDK's bundled HTTP client drops the connection against some
+    // OpenAI-compatible endpoints ("Premature close"). Node's own fetch
+    // talks to all of them, so use it.
+    fetch: globalThis.fetch,
     // Short and shallow on purpose: in a live channel a slow reply is worse
     // than no reply, and a retry storm is worse than both.
     timeout: options.timeoutMs ?? 20_000,

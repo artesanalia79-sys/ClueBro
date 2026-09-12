@@ -43,7 +43,9 @@ export function createMeetingExtractor(llm: LlmClient): ExtractNotes | undefined
       json: true,
       promptId: "memory.extract",
       temperature: 0,
-      maxTokens: 5000,
+      // Kept low so a small credit balance can still complete a run. Raise it
+      // for longer meetings once the account has room.
+      maxTokens: 1800,
     });
     return z.object({ notes: z.array(NoteSchema).max(16) }).parse(JSON.parse(result.text)).notes;
   };

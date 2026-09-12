@@ -9,6 +9,11 @@
     '[role="region"][aria-label*="caption" i]',
     '[role="region"][aria-label*="subtítulo" i]',
   ];
+  // Meet renders icon ligatures, scroll buttons and the speaker's own label
+  // inside the caption region. They reach the transcript as if they were
+  // speech, and then the extractor treats them as things people said.
+  const NOISE =
+    /^(arrow_downward|expand_more|keyboard_arrow\w*|more_vert|Ir al final|Jump to bottom|Tú|You)$/i;
   let meeting = null,
     recording = false,
     pending = [],
@@ -143,7 +148,7 @@
       for (const node of container.querySelectorAll("div, span")) {
         if (node.querySelector("div, span") || node.closest("#cluebro-panel")) continue;
         const text = node.textContent?.trim();
-        if (!text || text.length < 2) continue;
+        if (!text || text.length < 2 || NOISE.test(text)) continue;
         const speaker = node.closest("[data-sender-name]")?.dataset.senderName || "Unknown speaker";
         if (text === speaker) continue;
         const previous = candidates.get(node);

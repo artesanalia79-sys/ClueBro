@@ -43,7 +43,11 @@ async function buildLlm(config: AppConfig, log: Logger): Promise<LlmClient> {
   // Loaded lazily so the fake path never pays for the vendor SDK.
   const { createOpenAiLlm } = await import("./llm/openai");
   log.info(`llm provider: openai (${config.openaiModel})`);
-  return createOpenAiLlm({ apiKey: config.openaiApiKey, model: config.openaiModel });
+  return createOpenAiLlm({
+    apiKey: config.openaiApiKey,
+    model: config.openaiModel,
+    ...(config.openaiBaseUrl ? { baseUrl: config.openaiBaseUrl } : {}),
+  });
 }
 
 async function buildAdapters(
