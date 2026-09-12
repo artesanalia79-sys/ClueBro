@@ -16,17 +16,28 @@
   // speech, and then the extractor treats them as things people said.
   const NOISE =
     /^(arrow_downward|expand_more|keyboard_arrow\w*|more_vert|Ir al final|Jump to bottom|Tú|You)$/i;
-  // The hang-up button exists only once you are actually in the call, not in
-  // the lobby and not after you leave. That makes it the signal for when a
-  // meeting starts and ends.
-  const LEAVE_BUTTON = [
+  // These exist once you are actually in the call, not in the lobby and not
+  // after you leave, which is what makes them the signal for when a meeting
+  // starts and ends. The data attributes come first because they do not
+  // change with the interface language; the hang-up labels are the fallback
+  // for a layout where the tiles are not rendered.
+  const IN_CALL = [
+    "[data-participant-id]",
+    "[data-self-name]",
+    "[data-meeting-code]",
     '[aria-label*="Leave call" i]',
     '[aria-label*="Salir de la llamada" i]',
     '[aria-label*="Abandonar la llamada" i]',
     '[aria-label*="Finalizar llamada" i]',
     '[aria-label*="End call" i]',
   ];
-  const inCall = () => LEAVE_BUTTON.some((s) => document.querySelector(s));
+  const captionsVisible = () => {
+    const container = SELECTORS.map((s) => document.querySelector(s)).find(Boolean);
+    return Boolean(container && (container.textContent ?? "").trim().length > 2);
+  };
+  // Captions only ever render during a call, so text in that region is proof
+  // of one no matter what the interface language calls the hang-up button.
+  const inCall = () => IN_CALL.some((s) => document.querySelector(s)) || captionsVisible();
   let meeting = null,
     recording = false,
     pending = [],
@@ -38,7 +49,8 @@
     candidates = new Map(),
     lastContext = "",
     lastContextAt = 0,
-    wasInCall = false;
+    wasInCall = false,
+    manualStop = false;
   const panel = document.createElement("aside");
   panel.id = "cluebro-panel";
   panel.setAttribute("aria-label", "ClueBro meeting memory");
@@ -386,7 +398,13 @@
     }
   }
   el(".start").onclick = () => void startSaving(false);
-  el(".finish").onclick = () => void finishMeeting();
+  el(".finish").onclick = () => {
+    // Captions keep flowing after an explicit stop, and captions are one of
+    // the signals for being in a call. Without this, stopping by hand would
+    // restart itself two seconds later.
+    manualStop = true;
+    void finishMeeting();
+  };
   el(".search").onsubmit = async (event) => {
     event.preventDefault();
     const button = el(".search button");
@@ -426,9 +444,12 @@
   setInterval(() => {
     const now = inCall();
     if (now && !wasInCall) {
-      if (!recording && !working) void startSaving(true);
-    } else if (!now && wasInCall && recording) {
-      void finishMeeting();
+      if (!recording && !working && !manualStop) void startSaving(true);
+    } else if (!now && wasInCall) {
+      // Actually leaving is what clears an explicit stop, so the next call
+      // starts on its own again.
+      manualStop = false;
+      if (recording) void finishMeeting();
     }
     wasInCall = now;
   }, 2000);

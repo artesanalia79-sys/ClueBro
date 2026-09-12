@@ -189,8 +189,9 @@ try {
       },
     },
   });
+  // An empty caption region is what a Meet page looks like outside a call.
   auto.document.body.innerHTML =
-    '<div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption">Shipping is Friday.</span></div></div>';
+    '<div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption"></span></div></div>';
   auto.eval(script);
   const settleAuto = async () => {
     for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 1));
@@ -204,26 +205,39 @@ try {
     await tickAuto(2000);
     assert.equal(captions.length, 0, "a page outside a call must capture nothing");
 
-    const leave = auto.document.createElement("button");
-    leave.setAttribute("aria-label", "Leave call");
-    auto.document.body.appendChild(leave);
+    // A tile carries no hang-up label, so this also covers a Meet running in
+    // an interface language the selectors do not spell out.
+    const tile = auto.document.createElement("div");
+    tile.setAttribute("data-participant-id", "sam");
+    auto.document.body.appendChild(tile);
+    auto.document.querySelector("#caption")!.textContent = "Shipping is Friday.";
     await tickAuto(2000);
     await tickAuto(500);
     await tickAuto(1300);
     assert.equal(captions.length, 1, "joining a call starts the session on its own");
 
-    leave.remove();
+    // Leaving tears the call interface down, captions included.
+    tile.remove();
+    auto.document.querySelector("#caption")!.textContent = "";
     await tickAuto(2000);
     await settleAuto();
     assert.equal(finished, true, "leaving a call closes the session on its own");
 
-    auto.document.querySelector("#caption")!.textContent = "After the call.";
-    await tickAuto(2000);
-    assert.notEqual(
-      captions.at(-1)!.text,
-      "After the call.",
-      "nothing is captured once the call is over",
-    );
+    // Captions coming back mean the call is live again, so a new session
+    // opens rather than the closed one silently reopening.
+    const afterLeaving = captions.length;
+    auto.document.querySelector("#caption")!.textContent = "Back in the call.";
+    for (let i = 0; i < 4; i++) await tickAuto(1300);
+    assert.equal(captions.length, afterLeaving + 1, "rejoining a call opens a new session");
+
+    // Stopping by hand has to survive captions that keep arriving, or the
+    // watcher would undo the decision two seconds later.
+    (auto.document.querySelector("#cluebro-panel .finish") as unknown as HTMLButtonElement).click();
+    await settleAuto();
+    const afterStopping = captions.length;
+    auto.document.querySelector("#caption")!.textContent = "Still talking afterwards.";
+    for (let i = 0; i < 4; i++) await tickAuto(1300);
+    assert.equal(captions.length, afterStopping, "an explicit stop is not undone by the watcher");
   } finally {
     await auto.happyDOM.close();
   }
