@@ -20,8 +20,12 @@ export interface SlackOutboundOptions {
 export function formatMessage(decision: ActionDecision): string {
   const draft = decision.draft;
   if (!draft) return "";
-  if (draft.sources.length === 0) return draft.body;
-  const sources = draft.sources.map((s) => `• ${s.label} (${s.ref})`).join("\n");
+  const fallbackRef = decision.delivery?.in_reply_to_event_id;
+  const sources = draft.sources.length > 0
+    ? draft.sources.map((s) => `• ${s.label} (${s.ref})`).join("\n")
+    : fallbackRef
+      ? `• Triggering message (${fallbackRef})`
+      : "No sources provided.";
   return `${draft.body}\n\n_Based on:_\n${sources}`;
 }
 
@@ -46,6 +50,10 @@ export function createSlackOutbound(options: SlackOutboundOptions): OutboundAdap
       }
 
       const text = formatMessage(decision);
+      // Root messages have no thread_id; their event id preserves the Slack timestamp.
+      const replyEvent = delivery.in_reply_to_event_id?.match(/^slack:([^:]+):(\d+\.\d+)$/);
+      const threadTs = delivery.thread_id ??
+        (replyEvent?.[1] === delivery.surface_id ? replyEvent?.[2] : undefined);
 
       try {
         let channel: string | undefined;
@@ -64,8 +72,8 @@ export function createSlackOutbound(options: SlackOutboundOptions): OutboundAdap
         const posted = await app.client.chat.postMessage({
           channel,
           text,
-          ...(delivery.target === "surface" && delivery.thread_id
-            ? { thread_ts: delivery.thread_id }
+          ...(delivery.target === "surface" && threadTs
+            ? { thread_ts: threadTs }
             : {}),
           unfurl_links: false,
         });
@@ -79,7 +87,12 @@ export function createSlackOutbound(options: SlackOutboundOptions): OutboundAdap
           deliveredAt: new Date(),
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const data = typeof err === "object" && err !== null && "data" in err
+          ? err.data as { error?: unknown } | undefined
+          : undefined;
+        const message = typeof data?.error === "string"
+          ? data.error
+          : err instanceof Error ? err.message : String(err);
         // Slack reports a missing scope as `missing_scope`, which is the most
         // common failure at a hackathon. Surface it verbatim.
         const code = /missing_scope/.test(message)
