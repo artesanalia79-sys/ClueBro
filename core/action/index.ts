@@ -55,20 +55,23 @@ interface Veto {
   rationale: string;
 }
 
-function parseVeto(raw: string): Veto {
+export function parseVeto(raw: string): Veto {
   try {
     const start = raw.indexOf("{");
     const end = raw.lastIndexOf("}");
     const obj = start >= 0 && end > start ? JSON.parse(raw.slice(start, end + 1)) : {};
-    const intervene = obj.intervene !== false;
+    if (obj.intervene !== false) {
+      return { intervene: true, reason: "would_add_noise", rationale: "The veto allowed the intervention." };
+    }
     const parsedReason = SilenceReason.safeParse(obj.reason_code);
+    const rationale = typeof obj.rationale === "string" ? obj.rationale.trim().slice(0, 600) : "";
+    if (!parsedReason.success || !rationale) {
+      return { intervene: true, reason: "would_add_noise", rationale: "unparseable veto, ignored" };
+    }
     return {
-      intervene,
-      reason: parsedReason.success ? parsedReason.data : "would_add_noise",
-      rationale:
-        typeof obj.rationale === "string" && obj.rationale.trim()
-          ? obj.rationale.trim().slice(0, 600)
-          : "The model judged that speaking here would not help.",
+      intervene: false,
+      reason: parsedReason.data,
+      rationale,
     };
   } catch {
     // A malformed veto must not silence a decision the policy already
@@ -77,12 +80,12 @@ function parseVeto(raw: string): Veto {
   }
 }
 
-function parseDraft(raw: string, fallback: string): Draft {
+function parseDraft(raw: string, fallback: Draft): Draft {
   try {
     const start = raw.indexOf("{");
     const end = raw.lastIndexOf("}");
     const obj = start >= 0 && end > start ? JSON.parse(raw.slice(start, end + 1)) : {};
-    const body = typeof obj.body === "string" && obj.body.trim() ? obj.body.trim() : fallback;
+    const body = typeof obj.body === "string" && obj.body.trim() ? obj.body.trim() : fallback.body;
     const sources = Array.isArray(obj.sources)
       ? (obj.sources as unknown[])
           .filter((s): s is { label?: unknown; ref?: unknown } => typeof s === "object" && s !== null)
@@ -92,10 +95,31 @@ function parseDraft(raw: string, fallback: string): Draft {
           }))
           .filter((s) => s.ref.length > 0)
       : [];
-    return { body: body.slice(0, 3000), sources };
+    return { body: body.slice(0, 3000), sources: sources.length > 0 ? sources : fallback.sources };
   } catch {
-    return { body: fallback, sources: [] };
+    return fallback;
   }
+}
+
+function fallbackDraft(observation: Observation, subjectName: string): Draft {
+  const cited = observation.evidence[0];
+  const quote = cited?.quote ?? observation.summary;
+  const body = (() => {
+    switch (observation.kind) {
+      case "unanswered_question":
+        return `${subjectName}, this is still open: “${quote}” Can someone closest to it confirm?`;
+      case "information_gap":
+        return `${subjectName}, “${quote}” is still unresolved. The owner of this metric may be the best person to ask.`;
+      case "plan_without_owner":
+        return `${subjectName}, “${quote}” still needs an owner and date. Who can take it?`;
+      default:
+        return observation.summary;
+    }
+  })();
+  return {
+    body: body.slice(0, 3000),
+    sources: observation.evidence.map((e) => ({ label: "cited message", ref: e.event_id })),
+  };
 }
 
 const transcript = (events: readonly ContextEvent[]): string =>
@@ -208,7 +232,7 @@ export function createActionEngine(
         response.text,
         // If the model gives us nothing usable we still say something true
         // and small, rather than dropping a decision we already justified.
-        `${observation.summary}`,
+        fallbackDraft(observation, subjectName),
       );
 
       // Cooldown and dedupe advance when the decision is made, not when the

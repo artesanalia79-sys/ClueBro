@@ -81,6 +81,21 @@ async function main(): Promise<void> {
     demo.byReason["cooldown_active"] !== undefined,
   );
 
+  // The demo transcript is locked: docs/DEMO.md is a second by second script
+  // written against these exact numbers, and the video is cut against them.
+  // A change to the transcript should break CI here rather than break a take
+  // that nobody discovers is wrong until the edit.
+  check(
+    "the demo still has the shape docs/DEMO.md was written against",
+    demo.spoke === 3,
+    `docs/DEMO.md says 3 interventions, got ${demo.spoke}. Re-record or revert the transcript.`,
+  );
+  check(
+    "at least four distinct silence reasons, which is the CP2 bar",
+    Object.keys(demo.bySilenceReason).length >= 4,
+    `got ${Object.keys(demo.bySilenceReason).join(", ")}`,
+  );
+
   console.log("\nsmoke: a conversation with nothing in it");
   const quiet = await replay("fixtures/transcripts/silence-only.json");
   console.log(`        ${JSON.stringify(quiet)}`);
@@ -92,6 +107,10 @@ async function main(): Promise<void> {
   console.log(`        ${JSON.stringify(meet)}`);
   check("the core handles a non-Slack surface unchanged", meet.events === 7);
   check("and surfaces something to the person it supports", meet.spoke >= 1, `spoke ${meet.spoke}`);
+  check(
+    "a meeting is never broadcast, so silence there is still explained",
+    meet.stayedQuiet === Object.values(meet.bySilenceReason).reduce((n, c) => n + c, 0),
+  );
 
   console.log("\nsmoke: mocks stand in for the real components");
   const mocked = await replay("fixtures/transcripts/demo-main.json", true);

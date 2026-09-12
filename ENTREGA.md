@@ -70,18 +70,27 @@ Include the one thing a judge will remember:
 - [ ] `README.md` starts with what it does, and `npm run replay:demo` works
       from a clean clone
 - [ ] CI badge is green on `main`
-- [ ] **no secrets committed** — run the check below before you make it public
+- [ ] **no secrets committed**
+
+```bash
+npm run check:secrets        # also runs in CI on every push
+```
+
+It matches the shape of a real token rather than the prefix: our own docs say
+"paste your `xoxb-` token here", and a looser grep reports those as leaks and
+costs you ten minutes of panic at the worst moment. It scans tracked files, so
+an untracked `.env` is fine — that is where a token is supposed to live.
+
+It also runs in CI, so a leak is blocked before it lands rather than found
+after the repo is already public. To check the history as well:
 
 ```bash
 git log --all -p | grep -nE 'xox[baprs]-[0-9]{6,}-|xapp-[0-9]-[A-Z0-9]{6,}-|sk-[A-Za-z0-9_-]{20,}' | head
 ```
 
-The pattern matches the shape of a real token, not just the prefix: our own
-docs mention `xoxb-` and `xapp-` as instructions, and a looser grep would
-report those as leaks and cost you ten minutes of panic.
-
-If it prints anything, rotate that token immediately. Do not try to rewrite
-history at T+160 — a rotated token is harmless even if it stays in the log.
+If either prints anything, rotate that token immediately. Do not try to
+rewrite history at T+160 — a rotated token is harmless even if it stays in the
+log.
 
 ## 4. Two minute video
 
