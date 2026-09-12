@@ -334,6 +334,76 @@ console.log("\npipeline: a decision for every event, and no accidental sends");
   checkEqual("a live run does deliver", live.calls.length, 1);
 }
 
+{
+  // A live channel does not stop producing messages because the model returned
+  // something the parser hated. Before this guard, one throw anywhere in
+  // detect or decide ended the whole session, and it ended it silently.
+  const log = spyLogger();
+  const decisionLog = createDecisionLog({ file: null, pretty: false });
+  const clock = createReplayClock();
+  const throwingDetector: Detector = {
+    name: "throws-on-the-second",
+    version: "0.0.0",
+    async observe(w) {
+      if (w[w.length - 1]?.text === "poison") throw new Error("the model returned garbage");
+      return silentDetector.observe(w, {
+        surfaceId: "S_TEST",
+        surfaceType: "group",
+        triggerEventId: "x",
+      });
+    },
+  };
+
+  await runPipeline({
+    inbound: fixedInbound([
+      event({ text: "fine", at: "2026-01-01T10:00:00.000Z" }),
+      event({ text: "poison", at: "2026-01-01T10:00:10.000Z" }),
+      event({ text: "fine again", at: "2026-01-01T10:00:20.000Z" }),
+    ]),
+    outbound: spyOutbound(),
+    detector: throwingDetector,
+    actionEngine: alwaysSilentEngine(),
+    decisionLog,
+    log,
+    clock,
+    config: { window: { maxEvents: 12, maxAgeSeconds: 900 }, dryRun: true },
+  });
+
+  const summary = decisionLog.summary();
+  checkEqual("a detector that throws does not end the session", summary.events, 2);
+  checkEqual("and the failure is counted, not swallowed", summary.failed, 1);
+  check(
+    "and the error names the stage and the event",
+    log.lines.some((l) => l.level === "error" && l.msg.includes("threw")),
+  );
+}
+{
+  // Same for the decide half: an engine that throws, or a delivery that throws
+  // instead of returning a failed ActionResult.
+  const log = spyLogger();
+  const decisionLog = createDecisionLog({ file: null, pretty: false });
+  const throwingEngine = {
+    name: "throws",
+    version: "0.0.0",
+    async decide(): Promise<never> {
+      throw new Error("policy blew up");
+    },
+  };
+
+  await runPipeline({
+    inbound: fixedInbound([event({ text: "anything", at: "2026-01-01T10:00:00.000Z" })]),
+    outbound: spyOutbound(),
+    detector: silentDetector,
+    actionEngine: throwingEngine,
+    decisionLog,
+    log,
+    clock: createReplayClock(),
+    config: { window: { maxEvents: 12, maxAgeSeconds: 900 }, dryRun: true },
+  });
+
+  checkEqual("an engine that throws does not end the session", decisionLog.summary().failed, 1);
+}
+
 // --- observability ---------------------------------------------------------
 
 console.log("\nobservability: the silences are counted separately");
