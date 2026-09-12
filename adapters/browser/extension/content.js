@@ -1,4 +1,6 @@
-/* Captions are opt-in, saved before upload, and scoped to an explicit session. */
+/* Captions follow the call: the session opens when you join and closes when
+   you leave. Saved locally before upload, announced in a visible panel, and
+   stoppable at any time -- known support, not a hidden recorder. */
 (() => {
   if (document.getElementById("cluebro-panel")) return;
   const ROOM = location.pathname.replace(/^\//, "") || "unknown-meeting";
@@ -14,6 +16,17 @@
   // speech, and then the extractor treats them as things people said.
   const NOISE =
     /^(arrow_downward|expand_more|keyboard_arrow\w*|more_vert|Ir al final|Jump to bottom|Tú|You)$/i;
+  // The hang-up button exists only once you are actually in the call, not in
+  // the lobby and not after you leave. That makes it the signal for when a
+  // meeting starts and ends.
+  const LEAVE_BUTTON = [
+    '[aria-label*="Leave call" i]',
+    '[aria-label*="Salir de la llamada" i]',
+    '[aria-label*="Abandonar la llamada" i]',
+    '[aria-label*="Finalizar llamada" i]',
+    '[aria-label*="End call" i]',
+  ];
+  const inCall = () => LEAVE_BUTTON.some((s) => document.querySelector(s));
   let meeting = null,
     recording = false,
     pending = [],
@@ -24,7 +37,8 @@
     drainTask = Promise.resolve(),
     candidates = new Map(),
     lastContext = "",
-    lastContextAt = 0;
+    lastContextAt = 0,
+    wasInCall = false;
   const panel = document.createElement("aside");
   panel.id = "cluebro-panel";
   panel.setAttribute("aria-label", "ClueBro meeting memory");
@@ -33,7 +47,7 @@
     <div class="panel-content">
       <p class="state" role="status" aria-live="polite">Ready when you are.</p>
       <label class="project-label">Project<input class="project" maxlength="120" placeholder="e.g. Product launch" /></label>
-      <p class="hint">Start saving to keep captions locally. Use the same project to connect meetings. Turn on Meet captions.</p>
+      <p class="hint">Saving starts when you join the call and stops when you leave. Captions stay on this machine. Use the same project to connect meetings. Turn on Meet captions.</p>
       <div class="actions"><button class="start primary" type="button">Start saving</button><button class="finish" type="button" disabled>Finish & organize</button></div>
       <nav aria-label="Memory views"><button class="view active" data-view="context" type="button">Context</button><button class="view" data-view="history" type="button">History</button></nav>
       <section class="context-view"><form class="search"><label class="sr-only" for="cluebro-query">Search project memory</label><input id="cluebro-query" maxlength="1000" placeholder="What did we agree about delivery?" required /><button type="submit" aria-label="Search memory">↗</button></form><div class="memory-results"><p class="empty">Your previous meetings will appear here as the conversation develops.</p></div><div class="cards"></div></section>
@@ -299,8 +313,9 @@
     void poll();
     stream = setInterval(poll, 3000);
   }
-  el(".start").onclick = async () => {
+  async function startSaving(automatic = false) {
     if (!project()) {
+      if (automatic) return;
       el(".project").focus();
       status("Enter a project to connect your meetings.");
       return;
@@ -322,15 +337,22 @@
       recording = true;
       remember();
       connect();
-      status("Saving captions locally. Turn on Meet captions.");
+      // Say so out loud when nobody pressed the button: the panel being
+      // visible is what makes this support rather than a hidden recorder.
+      status(
+        automatic
+          ? "Saving started automatically for this call. Turn on Meet captions."
+          : "Saving captions locally. Turn on Meet captions.",
+      );
     } catch (error) {
       status(error.message);
     } finally {
       working = false;
       controls();
     }
-  };
-  el(".finish").onclick = async () => {
+  }
+  async function finishMeeting() {
+    if (!meeting || working) return;
     scan();
     working = true;
     recording = false;
@@ -362,7 +384,9 @@
       working = false;
       controls();
     }
-  };
+  }
+  el(".start").onclick = () => void startSaving(false);
+  el(".finish").onclick = () => void finishMeeting();
   el(".search").onsubmit = async (event) => {
     event.preventDefault();
     const button = el(".search button");
@@ -396,6 +420,34 @@
     el(".collapse").setAttribute("aria-expanded", String(!hidden));
     el(".collapse").setAttribute("aria-label", hidden ? "Expand panel" : "Minimize panel");
   };
+  // Joining and leaving a call are the real start and end of a meeting.
+  // Waiting for someone to remember two buttons loses the transcript of
+  // every call where they forget the second one.
+  setInterval(() => {
+    const now = inCall();
+    if (now && !wasInCall) {
+      if (!recording && !working) void startSaving(true);
+    } else if (!now && wasInCall && recording) {
+      void finishMeeting();
+    }
+    wasInCall = now;
+  }, 2000);
+
+  // A tab closed mid-call never reaches the watcher above. The background
+  // worker outlives this page, so handing the request over there is what
+  // makes the transcript survive.
+  addEventListener("pagehide", () => {
+    if (!recording || !meeting) return;
+    recording = false;
+    try {
+      chrome.runtime.sendMessage({
+        type: "cluebro-request",
+        path: `/meetings/${meeting.id}/finish`,
+        body: {},
+      });
+    } catch {}
+  });
+
   setInterval(scan, 500);
   setInterval(() => {
     void drain();

@@ -143,6 +143,92 @@ try {
   await window.happyDOM.close();
 }
 
+// Joining a call starts the session and leaving it closes the session, so a
+// transcript no longer depends on remembering two buttons.
+{
+  const auto = new Window({ url: "https://meet.google.com/abc-defg-hij" });
+  let clock = Date.now();
+  const ticks = new Map<number, () => void>();
+  let id = 0;
+  auto.setInterval = ((callback: () => void) => {
+    ticks.set(++id, callback);
+    return id;
+  }) as unknown as typeof auto.setInterval;
+  auto.clearInterval = ((key: number) => {
+    ticks.delete(key);
+  }) as unknown as typeof auto.clearInterval;
+  auto.Date.now = () => clock;
+  const captions: Record<string, unknown>[] = [];
+  let finished = false;
+  const store: Record<string, unknown> = {};
+  const meeting = { ...session, id: "6f1c0f04-0a3b-4a1e-9c23-7a3f5d0e21bb", ended_at: null };
+  Object.assign(auto, {
+    chrome: {
+      storage: {
+        local: {
+          set: async (data: Record<string, unknown>) => Object.assign(store, structuredClone(data)),
+          get: async (key: string) => ({ [key]: store[key] }),
+        },
+      },
+      runtime: {
+        sendMessage: async (message: { path: string; body?: Record<string, unknown> }) => {
+          if (message.path === "/captions") {
+            captions.push(structuredClone(message.body!));
+            return { status: 202, text: "" };
+          }
+          let result: unknown = meeting;
+          if (message.path.endsWith("/finish")) {
+            finished = true;
+            result = { ...meeting, ended_at: new Date().toISOString() };
+          }
+          if (message.path.startsWith("/meetings?")) result = [meeting];
+          if (message.path.startsWith("/suggestions?")) result = { frames: [] };
+          if (message.path.includes("/context")) result = { hits: [] };
+          return { status: 200, text: JSON.stringify(result) };
+        },
+      },
+    },
+  });
+  auto.document.body.innerHTML =
+    '<div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption">Shipping is Friday.</span></div></div>';
+  auto.eval(script);
+  const settleAuto = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+  };
+  const tickAuto = async (ms: number) => {
+    clock += ms;
+    for (const callback of [...ticks.values()]) callback();
+    await settleAuto();
+  };
+  try {
+    await tickAuto(2000);
+    assert.equal(captions.length, 0, "a page outside a call must capture nothing");
+
+    const leave = auto.document.createElement("button");
+    leave.setAttribute("aria-label", "Leave call");
+    auto.document.body.appendChild(leave);
+    await tickAuto(2000);
+    await tickAuto(500);
+    await tickAuto(1300);
+    assert.equal(captions.length, 1, "joining a call starts the session on its own");
+
+    leave.remove();
+    await tickAuto(2000);
+    await settleAuto();
+    assert.equal(finished, true, "leaving a call closes the session on its own");
+
+    auto.document.querySelector("#caption")!.textContent = "After the call.";
+    await tickAuto(2000);
+    assert.notEqual(
+      captions.at(-1)!.text,
+      "After the call.",
+      "nothing is captured once the call is over",
+    );
+  } finally {
+    await auto.happyDOM.close();
+  }
+}
+
 let listener: (message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean;
 const fetched: string[] = [];
 runInNewContext(readFileSync(new URL("../extension/background.js", import.meta.url), "utf8"), {
@@ -176,5 +262,5 @@ assert.equal(
   "the worker must reject arbitrary destinations and external senders",
 );
 console.log(
-  "Meeting panel: opt-in, caption stability, offline queue, sources, finish and worker restrictions passed.",
+  "Meeting panel: automatic session, caption stability, offline queue, sources, finish and worker restrictions passed.",
 );
