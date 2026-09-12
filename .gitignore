@@ -6,3 +6,4 @@ logs/
 prompts/runs/
 .clock
 .DS_Store
+meeting-memory/

@@ -1,34 +1,187 @@
-/* The panel is deliberately visible and deliberately unmistakable. This is
-   consented support: the person using it knows it is there, and anyone
-   looking at their screen can see it too. */
 #cluebro-panel {
+  --ink: #eeeae1;
+  --muted: #b5b6ae;
+  --accent: #d6e49b;
+  --line: #41483b;
   position: fixed;
   right: 16px;
-  bottom: 96px;
-  width: 320px;
-  max-height: 50vh;
+  bottom: 88px;
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100vh - 120px);
   overflow-y: auto;
   z-index: 2147483647;
-  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #e6e9ef;
-  background: #1f2933;
-  border: 1px solid #3b4754;
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  color: var(--ink);
+  background: #252b24;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px #0005;
+  font:
+    13px/1.5 "Segoe UI",
+    sans-serif;
+  text-align: left;
+}
+#cluebro-panel * {
+  box-sizing: border-box;
+}
+#cluebro-panel [hidden] {
+  display: none !important;
 }
 #cluebro-panel header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid #3b4754;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  justify-content: space-between;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--line);
 }
-#cluebro-panel .state { font-weight: 400; color: #9aa5b1; font-size: 11px; }
-#cluebro-panel .card { padding: 10px 12px; border-bottom: 1px solid #2b3642; }
-#cluebro-panel .card:last-child { border-bottom: 0; }
-#cluebro-panel .body { margin: 0 0 6px; }
-#cluebro-panel .why { color: #9aa5b1; font-size: 11px; margin: 0 0 6px; }
-#cluebro-panel .sources { margin: 0; padding-left: 16px; color: #7fb3d5; font-size: 11px; }
-#cluebro-panel .empty { padding: 12px; color: #9aa5b1; }
+#cluebro-panel header strong {
+  display: block;
+  font:
+    25px/1.15 Georgia,
+    serif;
+  letter-spacing: -0.6px;
+}
+#cluebro-panel .eyebrow {
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 2px;
+}
+#cluebro-panel button {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+}
+#cluebro-panel button:hover:not(:disabled) {
+  background: #3d4836;
+}
+#cluebro-panel button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+#cluebro-panel button:focus-visible,
+#cluebro-panel input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+#cluebro-panel input {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 10px;
+  font: inherit;
+  background: #1b211b;
+  color: var(--ink);
+}
+#cluebro-panel input::placeholder {
+  color: #a4aa9c;
+}
+#cluebro-panel .state {
+  margin: 0;
+  padding: 12px 18px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+#cluebro-panel .project-label {
+  display: block;
+  margin: 0 18px;
+  font-size: 11px;
+  color: var(--muted);
+}
+#cluebro-panel .project {
+  display: block;
+  margin-top: 4px;
+}
+#cluebro-panel .hint {
+  margin: 8px 18px 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+#cluebro-panel .actions {
+  display: flex;
+  gap: 8px;
+  margin: 0 18px 16px;
+}
+#cluebro-panel .primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #222c17;
+  font-weight: 600;
+}
+#cluebro-panel .primary:hover:not(:disabled) {
+  background: #e3eebe;
+}
+#cluebro-panel nav {
+  display: flex;
+  border-block: 1px solid var(--line);
+  padding: 0 18px;
+  gap: 20px;
+}
+#cluebro-panel .view {
+  border: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: 10px 0;
+  color: var(--muted);
+}
+#cluebro-panel .view.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+#cluebro-panel .search {
+  display: flex;
+  gap: 6px;
+  margin: 14px 18px;
+}
+#cluebro-panel .empty {
+  color: var(--muted);
+  padding: 8px 18px 18px;
+  margin: 0;
+}
+#cluebro-panel .result-label {
+  margin: 18px 18px 0;
+  font-size: 9px;
+  color: var(--accent);
+  letter-spacing: 1.2px;
+}
+#cluebro-panel .memory-hit,
+#cluebro-panel .card {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+#cluebro-panel .memory-hit p,
+#cluebro-panel .card p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+}
+#cluebro-panel .source {
+  color: var(--muted);
+  font-size: 11px;
+}
+#cluebro-panel .memory-hit button {
+  font-size: 11px;
+  margin-right: 6px;
+  padding: 5px 8px;
+}
+#cluebro-panel .refresh {
+  margin: 12px 18px;
+}
+#cluebro-panel .meetings {
+  padding-bottom: 12px;
+}
+#cluebro-panel footer {
+  padding: 12px 18px;
+  font-size: 10px;
+  color: var(--muted);
+}
+#cluebro-panel .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
