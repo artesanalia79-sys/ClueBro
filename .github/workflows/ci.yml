@@ -29,17 +29,22 @@ jobs:
       - name: boundaries
         run: npm run check:boundaries
 
-      # 3. Every contract against its fixtures, including the fixtures that
+      # 3. The only mistake here that a revert cannot undo. Blocks the commit
+      #    that would leak, rather than finding it after the repo is public.
+      - name: secrets
+        run: npm run check:secrets
+
+      # 4. Every contract against its fixtures, including the fixtures that
       #    must be REJECTED.
       - name: contracts
         run: npm run validate:contracts
 
-      # 4. Each owner's own check.ts, discovered automatically so nobody has
+      # 5. Each owner's own check.ts, discovered automatically so nobody has
       #    to edit a shared file to register a test.
       - name: units
         run: npm run check:units
 
-      # 5. The whole pipeline on three saved conversations. No network, no
+      # 6. The whole pipeline on three saved conversations. No network, no
       #    keys: the fake provider is deterministic.
       - name: smoke
         run: npm run smoke

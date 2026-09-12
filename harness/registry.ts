@@ -137,7 +137,11 @@ export async function buildRuntime(config: AppConfig): Promise<Runtime> {
     outbound,
     detector,
     actionEngine,
-    decisionLog: createDecisionLog({ file: config.logFile || null, pretty: true }),
+    decisionLog: createDecisionLog({
+      file: config.logFile || null,
+      pretty: true,
+      verbose: config.logLevel === "debug",
+    }),
     log,
     clock,
   };
