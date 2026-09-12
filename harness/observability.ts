@@ -88,9 +88,27 @@ export interface DecisionLog {
 export interface DecisionLogOptions {
   file: string | null;
   pretty: boolean;
+  /**
+   * Prompt provenance and the dry-run delivery line. Real, queryable, and of
+   * no use to somebody reading the screen: they go behind --debug so the
+   * default block stays readable in two seconds. Everything they carry is in
+   * the JSONL record either way.
+   */
+  verbose?: boolean;
+}
+
+/**
+ * The rationale usually opens by restating the observation, which puts the
+ * same sentence on screen twice. Print only what the rationale adds.
+ */
+function reasonBeyond(summary: string, rationale: string): string | null {
+  const extra = rationale.startsWith(summary) ? rationale.slice(summary.length) : rationale;
+  const trimmed = extra.replace(/^[\s.;:,-]+/, "").trim();
+  return trimmed.length > 20 ? trimmed : null;
 }
 
 export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
+  const verbose = options.verbose ?? false;
   const counts = { events: 0, spoke: 0, stayedQuiet: 0 };
   const byReason: Record<string, number> = {};
   const bySilenceReason: Record<string, number> = {};
@@ -120,9 +138,12 @@ export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
           : `post in ${dec.delivery.surface_id}`;
       console.log(
         `  ${paint(C.grey, "decided")}  ${paint(C.green, "SPEAK")} ${paint(C.grey, "->")} ${route} ` +
-          `${paint(C.grey, `[${dec.reason_code}]`)}`,
+          `${paint(C.bold + C.green, `[${dec.reason_code}]`)}`,
       );
-      console.log(`  ${paint(C.grey, "because")}  ${paint(C.dim, truncate(dec.rationale, 150))}`);
+      const speakBecause = reasonBeyond(obs.summary, dec.rationale);
+      if (speakBecause) {
+        console.log(`  ${paint(C.grey, "because")}  ${paint(C.dim, truncate(speakBecause, 150))}`);
+      }
       console.log(`  ${paint(C.grey, "says")}     ${truncate(dec.draft.body, 150)}`);
       if (dec.draft.sources.length > 0) {
         console.log(
@@ -130,15 +151,21 @@ export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
         );
       }
     } else {
-      // The line this whole project is about.
+      // The line this whole project is about, so the reason code is the
+      // brightest thing in the block rather than grey punctuation after it.
       console.log(
         `  ${paint(C.grey, "decided")}  ${paint(C.yellow, "STAY QUIET")} ` +
-          `${paint(C.grey, `[${dec.reason_code}]`)}`,
+          `${paint(C.bold + C.yellow, `[${dec.reason_code}]`)}`,
       );
-      console.log(`  ${paint(C.grey, "because")}  ${paint(C.dim, truncate(dec.rationale, 150))}`);
+      const quietBecause = reasonBeyond(obs.summary, dec.rationale);
+      if (quietBecause) {
+        console.log(`  ${paint(C.grey, "because")}  ${paint(C.dim, truncate(quietBecause, 150))}`);
+      }
     }
 
-    if (result && result.status !== "skipped_no_action") {
+    const worthShowing =
+      result && (verbose ? result.status !== "skipped_no_action" : result.status === "delivered" || result.status === "failed");
+    if (result && worthShowing) {
       const statusColor =
         result.status === "delivered" ? C.green : result.status === "failed" ? C.red : C.grey;
       const detail = result.error ? ` ${result.error.code}: ${result.error.message}` : "";
@@ -154,7 +181,7 @@ export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
     ]
       .filter(Boolean)
       .join(" + ");
-    if (promptTrail) {
+    if (promptTrail && verbose) {
       console.log(`  ${paint(C.grey, "prompts")}  ${paint(C.grey, promptTrail)}`);
     }
   };
