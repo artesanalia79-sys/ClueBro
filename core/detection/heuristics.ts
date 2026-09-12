@@ -20,22 +20,32 @@ export interface HeuristicHit {
   note: string;
 }
 
+// Two rules for what belongs here. Words that open a real sentence as often
+// as they stand alone ("bueno", "claro", "dale") are left out, because a match
+// drops the whole line and losing "Bueno equipo, entonces quedamos el jueves"
+// costs more than letting a stray "listo" through. And "yes"/"no" are gone
+// for the same reason: on their own they are already under the length floor,
+// while as a prefix they swallowed every Spanish sentence that opens with a
+// negation -- "No encuentro el runbook" is the opposite of small talk.
 const SMALLTALK =
-  /^(ha(ha)+|lol+|jaja+|thanks?|thank you|ty|np|nice|cool|great|awesome|same|\+1|ok(ay)?|yep|yes|no|sure|done|gm|morning|brb)\b/i;
+  /^(ha(ha)+|lol+|jaja+|thanks?|thank you|ty|np|nice|cool|great|awesome|same|\+1|ok(ay)?|yep|sure|done|gm|morning|brb|gracias|muchas gracias|hola|buenas|buenos d[ií]as|chau|adi[oó]s)\b/i;
 
+// The accented Spanish forms are unambiguous; the bare ones are not ("como
+// decíamos", "cuando llegue") and a question mark already catches those.
 const QUESTION_OPENERS =
-  /^(who|what|when|where|why|which|how|is|are|was|were|do|does|did|can|could|should|would|has|have|any(one|body)|somebody)\b/i;
+  /^(who|what|when|where|why|which|how|is|are|was|were|do|does|did|can|could|should|would|has|have|any(one|body)|somebody|qu[eé]|qui[eé]n(es)?|cu[aá]ndo|d[oó]nde|c[oó]mo|cu[aá]l(es)?|cu[aá]nto|por qu[eé]|alguien|sab[eé]s|saben|sabe)\b/i;
 
 const SEEKING =
-  /\b(can'?t find|cannot find|couldn'?t find|where is|where'?s|anyone have|does anyone have|any(one|body) got|looking for|lost the|no idea where|link to)\b/i;
+  /\b(can'?t find|cannot find|couldn'?t find|where is|where'?s|anyone have|does anyone have|any(one|body) got|looking for|lost the|no idea where|link to|no encuentro|no encontr[eé]|no puedo encontrar|d[oó]nde est[aá]|d[oó]nde qued[oó]|alguien tiene|alguno tiene|tienen el|estoy buscando|ni idea d[oó]nde|no s[eé] d[oó]nde|p[aá]same el|el link de|el enlace)\b/i;
 
 const LOOSE_PLAN =
-  /\b(let'?s|we should|we could|we need to|someone should|why don'?t we|next week|next sprint|at some point|sometime|later today|tomorrow)\b/i;
+  /\b(let'?s|we should|we could|we need to|someone should|why don'?t we|next week|next sprint|at some point|sometime|later today|tomorrow|deber[ií]amos|tenemos que|hay que|habr[ií]a que|podr[ií]amos|alguien deber[ií]a|la pr[oó]xima semana|la semana que viene|el pr[oó]ximo sprint|en alg[uú]n momento|m[aá]s adelante)\b/i;
 
-const HAS_OWNER = /(@|\bI'?ll\b|\bi will\b|\bi'?ve got\b|\bmine\b|\btaking it\b|\bon it\b)/i;
+const HAS_OWNER =
+  /(@|\bI'?ll\b|\bi will\b|\bi'?ve got\b|\bmine\b|\btaking it\b|\bon it\b|\bme encargo\b|\blo hago yo\b|\byo lo hago\b|\blo tomo\b|\bqueda de mi lado\b|\bme lo llevo\b)/i;
 
 const HAS_DATE =
-  /\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|\d{1,2}[:h]\d{2}|\d{1,2}\s?(am|pm)|\d{1,2}\/\d{1,2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i;
+  /\b(mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tonight|\d{1,2}[:h]\d{2}|\d{1,2}\s?(am|pm)|\d{1,2}\/\d{1,2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|hoy|ma[nñ]ana|esta tarde|esta noche|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/i;
 
 export const isSmalltalk = (text: string): boolean =>
   text.trim().length < 12 || SMALLTALK.test(text.trim());
