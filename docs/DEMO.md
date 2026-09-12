@@ -28,7 +28,7 @@ Wall clock, on a cold run, `LLM_PROVIDER=fake`:
 
 Pacing is capped at 2.5s between blocks regardless of `--speed`, so a twelve
 minute conversation always plays in about twenty-five seconds. Append
-`-- --speed 0` to any of them to dump the whole run instantly, which is what
+`-- --speed 0` to any of them to dump the whole run in **0.6s**, which is what
 you want when you need to scroll back rather than watch it arrive.
 
 The whole take is 26s of demo plus 16s of meet inside a 120s video. The
