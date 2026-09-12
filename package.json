@@ -19,13 +19,14 @@
     "lint": "npm run typecheck",
     "check:boundaries": "tsx scripts/check-boundaries.ts",
     "check:units": "tsx scripts/run-checks.ts",
+    "check:secrets": "tsx scripts/check-secrets.ts",
     "validate:contracts": "tsx contracts/bin/validate.ts",
     "prompt:eval": "tsx prompts/bin/eval.ts",
     "prompt:diff": "tsx prompts/bin/diff.ts",
     "clock:start": "tsx scripts/clock.ts start",
     "clock": "tsx scripts/clock.ts show",
     "fmt": "prettier --write \"**/*.{ts,json,md}\"",
-    "ci": "npm run typecheck && npm run check:boundaries && npm run validate:contracts && npm run check:units && npm run smoke"
+    "ci": "npm run typecheck && npm run check:boundaries && npm run check:secrets && npm run validate:contracts && npm run check:units && npm run smoke"
   },
   "dependencies": {
     "@slack/bolt": "^4.0.0",
