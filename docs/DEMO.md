@@ -40,6 +40,12 @@ Run this block. All of it. It takes forty seconds and it removes every reason
 a take gets thrown away.
 
 ```bash
+# 0. Node 22.13 or newer. The meeting memory uses node:sqlite, so `npm run ci`
+#    dies on the browser checks without it. The replay itself still runs on
+#    older Node -- the check suite does not, and you are the one who runs the
+#    drill at a checkpoint.
+node -v
+
 # 1. Clean state. decisions.jsonl APPENDS across runs: a stale file makes the
 #    jq counts in beat 3 lie, and that is the one number a judge might check.
 rm -rf logs/
