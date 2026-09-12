@@ -5,11 +5,12 @@
   "type": "module",
   "description": "A passive agent that lives where people already work. Channel-agnostic core, pluggable adapters.",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "dev": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter slack",
     "dev:dry": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter slack --dry-run",
+    "dev:meet": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter browser --live",
     "replay": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter replay --dry-run",
     "replay:demo": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter replay --transcript fixtures/transcripts/demo-main.json --dry-run --speed 6",
     "replay:silence": "tsx --env-file-if-exists=.env harness/bin/run.ts --adapter replay --transcript fixtures/transcripts/silence-only.json --dry-run",
@@ -35,6 +36,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "happy-dom": "^20.14.5",
     "prettier": "^3.3.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"

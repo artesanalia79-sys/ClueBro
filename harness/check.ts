@@ -216,13 +216,18 @@ console.log("\nconfig: one place reads the environment");
   // Drift here is silent and costs somebody twenty minutes.
   const source = readFileSync(new URL("./config.ts", import.meta.url), "utf8");
   const read = new Set(
-    [...source.matchAll(/\b(?:str|num|bool|list)\("([A-Z][A-Z0-9_]*)"/g)].map((m) => m[1] as string),
+    [...source.matchAll(/\b(?:str|num|bool|list)\("([A-Z][A-Z0-9_]*)"/g)].map(
+      (m) => m[1] as string,
+    ),
   );
-  const documented = new Set(
-    readFileSync(`${ROOT}.env.example`, "utf8")
-      .split("\n")
-      .map((line) => /^([A-Z][A-Z0-9_]*)=/.exec(line.trim())?.[1])
-      .filter((k): k is string => Boolean(k)),
+  const documentedKeys = readFileSync(`${ROOT}.env.example`, "utf8")
+    .split("\n")
+    .map((line) => /^([A-Z][A-Z0-9_]*)=/.exec(line.trim())?.[1])
+    .filter((k): k is string => Boolean(k));
+  const documented = new Set(documentedKeys);
+  check(
+    "each setting is documented once, so merged defaults cannot override one another",
+    documentedKeys.length === documented.size,
   );
 
   const undocumented = [...read].filter((k) => !documented.has(k)).sort();
@@ -308,11 +313,19 @@ console.log("\npipeline: a decision for every event, and no accidental sends");
   // DRY_RUN is enforced twice on purpose. This is the pipeline half; the other
   // half is registry.ts swapping the outbound for a console printer, so a bug
   // in one of them still cannot post to a real channel.
-  const detector = scriptedDetector([{ match: /deploy/, kind: "unanswered_question", confidence: 0.9 }]);
+  const detector = scriptedDetector([
+    { match: /deploy/, kind: "unanswered_question", confidence: 0.9 },
+  ]);
   const events = [event({ text: "did the deploy go out", at: "2026-01-01T10:00:00.000Z" })];
 
   const dry = spyOutbound();
-  const drySummary = await run({ events, detector, engine: alwaysActEngine, outbound: dry, dryRun: true });
+  const drySummary = await run({
+    events,
+    detector,
+    engine: alwaysActEngine,
+    outbound: dry,
+    dryRun: true,
+  });
   checkEqual("a dry run decides to speak", drySummary.spoke, 1);
   checkEqual("and never touches the outbound adapter", dry.calls.length, 0);
 
@@ -325,7 +338,9 @@ console.log("\npipeline: a decision for every event, and no accidental sends");
 
 console.log("\nobservability: the silences are counted separately");
 {
-  const detector = scriptedDetector([{ match: /deploy/, kind: "unanswered_question", confidence: 0.9 }]);
+  const detector = scriptedDetector([
+    { match: /deploy/, kind: "unanswered_question", confidence: 0.9 },
+  ]);
   const summary = await run({
     events: [
       event({ text: "did the deploy go out", at: "2026-01-01T10:00:00.000Z" }),
@@ -334,7 +349,11 @@ console.log("\nobservability: the silences are counted separately");
     detector,
     engine: alwaysActEngine,
   });
-  checkEqual("speaking is not counted as a silence reason", Object.keys(summary.bySilenceReason).length, 1);
+  checkEqual(
+    "speaking is not counted as a silence reason",
+    Object.keys(summary.bySilenceReason).length,
+    1,
+  );
   check(
     "and the speak reason is still in the full breakdown",
     summary.byReason["unanswered_question_timeout"] === 1,

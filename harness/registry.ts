@@ -49,6 +49,7 @@ async function buildLlm(config: AppConfig, log: Logger): Promise<LlmClient> {
 async function buildAdapters(
   config: AppConfig,
   log: Logger,
+  llm: LlmClient,
 ): Promise<{ inbound: InboundAdapter; outbound: OutboundAdapter }> {
   switch (config.adapter) {
     case "slack": {
@@ -72,9 +73,17 @@ async function buildAdapters(
 
     case "browser": {
       const { createBrowserBridge } = await import("@adapters/browser/index");
+      const { MeetingMemory } = await import("@adapters/browser/memory");
+      const { createMeetingExtractor, createMeetingAnswerer } = await import("./meeting-memory");
       const bridge = createBrowserBridge({
         port: config.browser.port,
         principalActorId: config.browser.principalActorId ?? "principal",
+        memory: new MeetingMemory(
+          config.browser.memoryDir,
+          config.browser.principalActorId ?? "principal",
+          createMeetingExtractor(llm),
+        ),
+        answer: createMeetingAnswerer(llm),
       });
       log.info("adapter: browser bridge (stage 2)", { port: config.browser.port });
       return {
@@ -130,7 +139,7 @@ export async function buildRuntime(config: AppConfig): Promise<Runtime> {
     },
   });
 
-  const { inbound, outbound } = await buildAdapters(config, log);
+  const { inbound, outbound } = await buildAdapters(config, log, llm);
 
   return {
     inbound,

@@ -1,138 +1,430 @@
-/**
- * Stage 2 surface: a meeting, feeding the same agent core.
- *
- * It does two things and nothing else:
- *   1. posts caption lines to the local bridge as they appear
- *   2. renders whatever the agent decides to surface, with its sources
- *
- * It never speaks in the meeting. The panel is visible to the person using
- * it, always shows where a claim came from, and the agent's presence is
- * known: support, not a hidden prompter.
- *
- * The caption selectors below are the fragile part. Google Meet's DOM is not
- * a public API and it changes. Expect to open DevTools on the day, find the
- * caption container, and add its selector to CAPTION_SELECTORS. That is a
- * ten minute job, not a redesign: everything downstream is unaffected
- * because the bridge only ever receives text.
- */
-const BRIDGE = "http://127.0.0.1:8787";
-
-const CAPTION_SELECTORS = [
-  '[jsname="dsyhDe"]',
-  '[jsname="tgaKEf"]',
-  ".a4cQT",
-  '[role="region"][aria-label*="aption" i]',
-];
-
-const MEETING_ID = location.pathname.replace(/^\//, "") || "unknown-meeting";
-
-/** Who the agent is supporting. Whoever runs the extension is the principal. */
-const PRINCIPAL = { id: "U-PRINCIPAL", name: "Me", role: "interviewer" };
-
-let panel;
-let seq = 0;
-const seen = new Set();
-
-function mountPanel() {
-  panel = document.createElement("div");
+/* Captions are opt-in, saved before upload, and scoped to an explicit session. */
+(() => {
+  if (document.getElementById("cluebro-panel")) return;
+  const ROOM = location.pathname.replace(/^\//, "") || "unknown-meeting";
+  const SESSION_KEY = `cluebro-session:${ROOM}`;
+  const SELECTORS = [
+    '[jsname="dsyhDe"]',
+    '[jsname="tgaKEf"]',
+    '[role="region"][aria-label*="caption" i]',
+    '[role="region"][aria-label*="subtítulo" i]',
+  ];
+  let meeting = null,
+    recording = false,
+    pending = [],
+    stream,
+    draining = false,
+    working = false;
+  let saving = Promise.resolve(),
+    drainTask = Promise.resolve(),
+    candidates = new Map(),
+    lastContext = "",
+    lastContextAt = 0;
+  const panel = document.createElement("aside");
   panel.id = "cluebro-panel";
-  panel.innerHTML =
-    '<header><span>ClueBro</span><span class="state">connecting</span></header>' +
-    '<div class="cards"><div class="empty">Listening. Nothing worth surfacing yet.</div></div>';
+  panel.setAttribute("aria-label", "ClueBro meeting memory");
+  panel.innerHTML = `
+    <header><div><span class="eyebrow">MEETING MEMORY</span><strong>ClueBro</strong></div><button class="collapse" type="button" aria-label="Minimize panel" aria-expanded="true">−</button></header>
+    <div class="panel-content">
+      <p class="state" role="status" aria-live="polite">Ready when you are.</p>
+      <label class="project-label">Project<input class="project" maxlength="120" placeholder="e.g. Product launch" /></label>
+      <p class="hint">Start saving to keep captions locally. Use the same project to connect meetings. Turn on Meet captions.</p>
+      <div class="actions"><button class="start primary" type="button">Start saving</button><button class="finish" type="button" disabled>Finish & organize</button></div>
+      <nav aria-label="Memory views"><button class="view active" data-view="context" type="button">Context</button><button class="view" data-view="history" type="button">History</button></nav>
+      <section class="context-view"><form class="search"><label class="sr-only" for="cluebro-query">Search project memory</label><input id="cluebro-query" maxlength="1000" placeholder="What did we agree about delivery?" required /><button type="submit" aria-label="Search memory">↗</button></form><div class="memory-results"><p class="empty">Your previous meetings will appear here as the conversation develops.</p></div><div class="cards"></div></section>
+      <section class="history-view" hidden><button class="refresh" type="button">Refresh meetings</button><div class="meetings"></div></section>
+      <footer>Local memory · Sources included</footer>
+    </div>`;
   document.body.appendChild(panel);
-}
-
-function setState(text) {
-  const el = panel?.querySelector(".state");
-  if (el) el.textContent = text;
-}
-
-function addCard(suggestion) {
-  const cards = panel?.querySelector(".cards");
-  if (!cards) return;
-  cards.querySelector(".empty")?.remove();
-
-  const card = document.createElement("div");
-  card.className = "card";
-
-  const body = document.createElement("p");
-  body.className = "body";
-  body.textContent = suggestion.body;
-
-  const why = document.createElement("p");
-  why.className = "why";
-  why.textContent = `${suggestion.reason_code} (${Number(suggestion.confidence).toFixed(2)}) — ${suggestion.rationale}`;
-
-  card.append(body, why);
-
-  if (Array.isArray(suggestion.sources) && suggestion.sources.length > 0) {
-    const list = document.createElement("ul");
-    list.className = "sources";
-    for (const source of suggestion.sources) {
-      const item = document.createElement("li");
-      item.textContent = `${source.label} (${source.ref})`;
-      list.appendChild(item);
-    }
-    card.appendChild(list);
+  const el = (selector) => panel.querySelector(selector);
+  const status = (text) => {
+    el(".state").textContent = text;
+  };
+  const project = () => el(".project").value.trim();
+  try {
+    el(".project").value = sessionStorage.getItem(`cluebro-project:${ROOM}`) || ROOM;
+  } catch {
+    el(".project").value = ROOM;
   }
 
-  cards.prepend(card);
-}
-
-function listen() {
-  const stream = new EventSource(`${BRIDGE}/suggestions`);
-  stream.onopen = () => setState("connected");
-  stream.onerror = () => setState("bridge offline");
-  stream.onmessage = (event) => {
+  async function request(path, body) {
+    const response = await chrome.runtime.sendMessage({
+      type: "cluebro-request",
+      path,
+      ...(body === undefined ? {} : { body }),
+    });
+    if (response.error) throw new Error(response.error);
+    if (response.status >= 400) {
+      let failure = {};
+      try {
+        failure = JSON.parse(response.text);
+      } catch {}
+      throw new Error(failure.error || `Bridge returned ${response.status}`);
+    }
+    if (path.endsWith("/export")) return response.text;
+    return response.text ? JSON.parse(response.text) : null;
+  }
+  function controls() {
+    el(".start").disabled = working || recording || pending.length > 0;
+    el(".start").textContent = meeting && !meeting.ended_at ? "Resume saving" : "Start saving";
+    el(".finish").disabled = working || !meeting;
+    el(".finish").textContent = meeting?.ended_at ? "Retry organizing" : "Finish & organize";
+    el(".project").disabled =
+      recording || working || pending.length > 0 || Boolean(meeting && !meeting.ended_at);
+  }
+  function remember() {
+    if (meeting) sessionStorage.setItem(SESSION_KEY, JSON.stringify(meeting));
+    sessionStorage.setItem(`cluebro-project:${ROOM}`, project());
+  }
+  function persistQueue() {
+    const key = `cluebro-pending:${meeting.id}`,
+      snapshot = pending.slice();
+    saving = saving.catch(() => {}).then(() => chrome.storage.local.set({ [key]: snapshot }));
+    return saving;
+  }
+  async function drain() {
+    if (draining) return drainTask;
+    if (!meeting || !pending.length) return;
+    draining = true;
+    drainTask = (async () => {
+      try {
+        await saving;
+        while (pending.length) {
+          await request("/captions", pending[0]);
+          pending.shift();
+          await persistQueue();
+        }
+        status(recording ? "Saving captions locally." : "All captured captions saved.");
+      } catch (error) {
+        status(`Pending: ${pending.length} caption(s). ${error.message}. Retrying automatically.`);
+      } finally {
+        draining = false;
+        controls();
+      }
+    })();
+    return drainTask;
+  }
+  async function enqueue(text, speaker) {
+    if (!meeting || !text.trim()) return;
+    const at = new Date().toISOString();
+    for (let offset = 0; offset < text.trim().length; offset += 8000)
+      pending.push({
+        meeting_id: meeting.id,
+        caption_id: crypto.randomUUID(),
+        text: text.trim().slice(offset, offset + 8000),
+        speaker_name: speaker,
+        speaker_id: speaker,
+        occurred_at: at,
+        offset_ms: Math.round(performance.now()),
+      });
     try {
-      addCard(JSON.parse(event.data));
-    } catch {
-      /* a malformed frame must not take the panel down mid-meeting */
+      await persistQueue();
+      void drain();
+    } catch (error) {
+      status(`Local queue could not be saved: ${error.message}`);
+      recording = false;
+      controls();
+    }
+  }
+  function flushCandidate(candidate) {
+    if (candidate.text === candidate.sent) return;
+    const text =
+      candidate.sent && candidate.text.startsWith(candidate.sent)
+        ? candidate.text.slice(candidate.sent.length).trim()
+        : candidate.text;
+    candidate.sent = candidate.text;
+    if (text) void enqueue(text, candidate.speaker);
+  }
+  function scan() {
+    if (!recording) return;
+    const container = SELECTORS.map((s) => document.querySelector(s)).find(Boolean),
+      now = Date.now();
+    if (container) {
+      for (const node of container.querySelectorAll("div, span")) {
+        if (node.querySelector("div, span") || node.closest("#cluebro-panel")) continue;
+        const text = node.textContent?.trim();
+        if (!text || text.length < 2) continue;
+        const speaker = node.closest("[data-sender-name]")?.dataset.senderName || "Unknown speaker";
+        if (text === speaker) continue;
+        const previous = candidates.get(node);
+        if (!previous) candidates.set(node, { text, speaker, changed: now, sent: "" });
+        else if (previous.text !== text) {
+          previous.text = text;
+          previous.speaker = speaker;
+          previous.changed = now;
+        }
+      }
+    }
+    for (const [node, candidate] of candidates) {
+      if (!node.isConnected || now - candidate.changed >= 1200) flushCandidate(candidate);
+      if (!node.isConnected) candidates.delete(node);
+    }
+  }
+  function showHits(hits, automatic = false, synthesis = null, warning = null) {
+    const target = el(".memory-results");
+    target.replaceChildren();
+    const caption = document.createElement("p");
+    caption.className = "result-label";
+    caption.textContent = automatic ? "RELATED FROM EARLIER MEETINGS" : "MATCHING SOURCES";
+    target.append(caption);
+    if (synthesis || warning) {
+      const answer = document.createElement("p");
+      answer.className = "memory-hit";
+      answer.textContent = synthesis ? synthesis.answer : warning;
+      target.append(answer);
+    }
+    if (!hits.length) {
+      const empty = document.createElement("p");
+      empty.className = "empty";
+      empty.textContent = "No matching sources in this project. Try a person, topic or decision.";
+      target.append(empty);
+    }
+    for (const hit of hits) {
+      const item = document.createElement("article");
+      item.className = "memory-hit";
+      const quote = document.createElement("p");
+      quote.textContent = hit.text;
+      const source = document.createElement("p");
+      source.className = "source";
+      source.textContent = `${hit.speaker} · ${hit.label} · ${new Date(hit.occurred_at).toLocaleString()}`;
+      if (synthesis?.sources.includes(hit.event_id))
+        source.textContent = `Cited in answer · ${source.textContent}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Download source";
+      button.onclick = () => void download(hit.meeting_id).catch((error) => status(error.message));
+      item.append(quote, source, button);
+      target.append(item);
+    }
+  }
+  async function download(id) {
+    const markdown = await request(`/meetings/${id}/export`);
+    const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `Meeting-${id}.md`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function history() {
+    const rows = await request(`/meetings?project=${encodeURIComponent(project())}`);
+    const target = el(".meetings");
+    target.replaceChildren();
+    if (!rows.length) {
+      target.textContent = "No saved meetings in this project yet.";
+      return;
+    }
+    for (const row of rows) {
+      const item = document.createElement("article");
+      item.className = "memory-hit";
+      const title = document.createElement("strong");
+      title.textContent = row.label;
+      const detail = document.createElement("p");
+      detail.className = "source";
+      detail.textContent = `${new Date(row.started_at).toLocaleString()} · ${row.event_count} captions · ${row.processing ? "Organizing…" : row.processing_error ? "Organization failed — retry" : row.ended_at ? (row.extraction_enabled ? `${row.processed_count}/${row.event_count} processed` : "Transcript only") : "Open"}`;
+      const exportButton = document.createElement("button");
+      exportButton.type = "button";
+      exportButton.textContent = "Download .md";
+      exportButton.onclick = () => void download(row.id).catch((error) => status(error.message));
+      const process = document.createElement("button");
+      process.type = "button";
+      process.textContent = "Organize";
+      process.disabled = !row.ended_at || row.processing;
+      process.onclick = async () => {
+        process.disabled = true;
+        status("Organizing saved captions…");
+        try {
+          await request(`/meetings/${row.id}/finish`, {});
+          status("Organizing started. Refresh to check progress.");
+          await history();
+        } catch (error) {
+          status(`Transcript saved. ${error.message}`);
+        } finally {
+          process.disabled = false;
+        }
+      };
+      item.append(title, detail, exportButton, process);
+      target.append(item);
+      if (!row.ended_at) {
+        const resume = document.createElement("button");
+        resume.type = "button";
+        resume.textContent = "Restore session";
+        resume.disabled = recording || working || pending.length > 0;
+        resume.onclick = async () => {
+          try {
+            meeting = await request(`/meetings/${row.id}`);
+            el(".project").value = meeting.project;
+            const key = `cluebro-pending:${meeting.id}`;
+            pending = (await chrome.storage.local.get(key))[key] || [];
+            candidates = new Map();
+            remember();
+            controls();
+            void drain();
+            status("Session restored. Resume saving or finish organizing.");
+          } catch (error) {
+            status(error.message);
+          }
+        };
+        item.append(resume);
+      }
+    }
+  }
+  function connect() {
+    if (stream) clearInterval(stream);
+    const id = meeting.id;
+    const poll = async () => {
+      try {
+        const result = await request(`/suggestions?meeting_id=${id}&poll=1`);
+        for (const card of result.frames) {
+          const item = document.createElement("article");
+          item.className = "card";
+          const body = document.createElement("p");
+          body.textContent = card.body;
+          const source = document.createElement("p");
+          source.className = "source";
+          source.textContent = (card.sources || []).map((s) => `${s.label} (${s.ref})`).join(" · ");
+          item.append(body, source);
+          el(".cards").prepend(item);
+          while (el(".cards").children.length > 8) el(".cards").lastChild.remove();
+        }
+      } catch {
+        /* Keep the panel usable if a frame is malformed. */
+      }
+    };
+    void poll();
+    stream = setInterval(poll, 3000);
+  }
+  el(".start").onclick = async () => {
+    if (!project()) {
+      el(".project").focus();
+      status("Enter a project to connect your meetings.");
+      return;
+    }
+    working = true;
+    controls();
+    try {
+      if (meeting && !meeting.ended_at) meeting = await request(`/meetings/${meeting.id}`);
+      if (!meeting || meeting.ended_at) {
+        meeting = await request("/meetings", {
+          room: ROOM,
+          label: document.title,
+          project: project(),
+        });
+        pending = [];
+        candidates = new Map();
+        lastContext = "";
+      }
+      recording = true;
+      remember();
+      connect();
+      status("Saving captions locally. Turn on Meet captions.");
+    } catch (error) {
+      status(error.message);
+    } finally {
+      working = false;
+      controls();
     }
   };
-}
-
-async function sendCaption(text, speakerName) {
-  seq += 1;
-  try {
-    await fetch(`${BRIDGE}/captions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        meeting_id: MEETING_ID,
-        meeting_label: document.title,
-        caption_id: `cap-${String(seq).padStart(4, "0")}`,
-        speaker_id: speakerName === PRINCIPAL.name ? PRINCIPAL.id : `U-${speakerName}`,
-        speaker_name: speakerName,
-        speaker_role: speakerName === PRINCIPAL.name ? PRINCIPAL.role : "participant",
-        text,
-        offset_ms: Math.round(performance.now()),
-      }),
-    });
-  } catch {
-    setState("bridge offline");
-  }
-}
-
-function watchCaptions() {
-  const observer = new MutationObserver(() => {
-    const container = CAPTION_SELECTORS.map((s) => document.querySelector(s)).find(Boolean);
-    if (!container) return;
-
-    // Captions rewrite themselves as the speaker talks, so only a line that
-    // has stopped changing is worth sending.
-    for (const node of container.querySelectorAll("div, span")) {
-      const text = node.textContent?.trim();
-      if (!text || text.length < 12 || seen.has(text)) continue;
-      seen.add(text);
-      const speaker = node.closest("[data-sender-name]")?.dataset.senderName || "Participant";
-      void sendCaption(text, speaker);
+  el(".finish").onclick = async () => {
+    scan();
+    working = true;
+    recording = false;
+    for (const candidate of candidates.values()) flushCandidate(candidate);
+    controls();
+    try {
+      await saving;
+      await drain();
+      if (pending.length) throw new Error("Wait for pending captions to upload before finishing.");
+      status("Transcript saved. Organizing notes…");
+      meeting = await request(`/meetings/${meeting.id}/finish`, {});
+      remember();
+      clearInterval(stream);
+      status(
+        meeting.extraction_enabled
+          ? "Transcript saved. Organizing in the background; check History for progress."
+          : "Transcript saved and searchable. AI organization is unavailable.",
+      );
+      await history();
+    } catch (error) {
+      if (meeting) {
+        try {
+          meeting = await request(`/meetings/${meeting.id}`);
+          remember();
+        } catch {}
+      }
+      status(`Your captured captions are retained. ${error.message}`);
+    } finally {
+      working = false;
+      controls();
     }
-  });
-
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-}
-
-mountPanel();
-listen();
-watchCaptions();
+  };
+  el(".search").onsubmit = async (event) => {
+    event.preventDefault();
+    const button = el(".search button");
+    button.disabled = true;
+    try {
+      const result = await request(
+        `/memory/search?project=${encodeURIComponent(project())}&q=${encodeURIComponent(el("#cluebro-query").value)}`,
+      );
+      showHits(result.hits, false, result.synthesis, result.warning);
+    } catch (error) {
+      status(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  el(".refresh").onclick = () => void history().catch((error) => status(error.message));
+  panel.querySelectorAll(".view").forEach(
+    (button) =>
+      (button.onclick = () => {
+        panel.querySelectorAll(".view").forEach((b) => b.classList.toggle("active", b === button));
+        el(".context-view").hidden = button.dataset.view !== "context";
+        el(".history-view").hidden = button.dataset.view !== "history";
+        if (button.dataset.view === "history")
+          void history().catch((error) => status(error.message));
+      }),
+  );
+  el(".collapse").onclick = () => {
+    const hidden = !el(".panel-content").hidden;
+    el(".panel-content").hidden = hidden;
+    el(".collapse").textContent = hidden ? "+" : "−";
+    el(".collapse").setAttribute("aria-expanded", String(!hidden));
+    el(".collapse").setAttribute("aria-label", hidden ? "Expand panel" : "Minimize panel");
+  };
+  setInterval(scan, 500);
+  setInterval(() => {
+    void drain();
+    if (!recording || Date.now() - lastContextAt < 15000 || el("#cluebro-query").value) return;
+    lastContextAt = Date.now();
+    void request(`/meetings/${meeting.id}/context`)
+      .then((result) => {
+        const key = result.hits.map((h) => h.event_id).join(",");
+        if (key && key !== lastContext) {
+          lastContext = key;
+          showHits(result.hits, true);
+        }
+      })
+      .catch(() => {});
+  }, 3000);
+  void (async () => {
+    try {
+      const stored = sessionStorage.getItem(SESSION_KEY);
+      if (stored) {
+        meeting = JSON.parse(stored);
+        el(".project").value = meeting.project;
+        const key = `cluebro-pending:${meeting.id}`;
+        pending = (await chrome.storage.local.get(key))[key] || [];
+        meeting = await request(`/meetings/${meeting.id}`);
+        status(
+          meeting.ended_at
+            ? "Previous meeting saved. Start a new session when ready."
+            : "Previous session restored. Resume saving when ready.",
+        );
+        void drain();
+      }
+    } catch (error) {
+      status(`Could not restore session: ${error.message}`);
+    }
+    controls();
+  })();
+})();

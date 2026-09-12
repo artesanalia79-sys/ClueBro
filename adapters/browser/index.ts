@@ -9,6 +9,9 @@ import {
   type OutboundAdapter,
 } from "@contracts";
 import { AsyncQueue } from "../shared/queue";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import type { MeetingMemory, MemoryHit } from "./memory";
 
 /**
  * Stage 2 adapter: a browser extension feeding the same agent.
@@ -27,6 +30,11 @@ export interface BrowserBridgeOptions {
   port: number;
   /** The person the agent is supporting. Suggestions go only to them. */
   principalActorId: string;
+  memory: MeetingMemory;
+  answer?: (
+    question: string,
+    hits: MemoryHit[],
+  ) => Promise<{ answer: string; sources: string[] } | null>;
 }
 
 interface CaptionPayload {
@@ -38,10 +46,22 @@ interface CaptionPayload {
   text?: string;
   caption_id?: string;
   offset_ms?: number;
+  occurred_at?: string;
 }
 
+const CaptionSchema = z.object({
+  meeting_id: z.string().uuid(),
+  text: z.string().trim().min(1).max(8000),
+  caption_id: z.string().min(1).max(100),
+  speaker_id: z.string().min(1).max(200).optional(),
+  speaker_name: z.string().min(1).max(200).optional(),
+  speaker_role: z.string().max(80).optional(),
+  offset_ms: z.number().finite().nonnegative().optional(),
+  occurred_at: z.string().datetime().optional(),
+});
+
 const CORS = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": "https://meet.google.com",
   "Access-Control-Allow-Headers": "content-type",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
 };
@@ -51,7 +71,10 @@ const readBody = (req: IncomingMessage): Promise<string> =>
     let data = "";
     req.on("data", (chunk) => {
       data += chunk;
-      if (data.length > 64_000) reject(new Error("caption payload too large"));
+      if (data.length > 64_000) {
+        reject(new Error("request payload too large"));
+        req.destroy();
+      }
     });
     req.on("end", () => resolve(data));
     req.on("error", reject);
@@ -64,11 +87,27 @@ export interface BrowserBridge {
 
 export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridge {
   const queue = new AsyncQueue<ContextEvent>();
-  const listeners = new Set<ServerResponse>();
+  const listeners = new Map<ServerResponse, string>();
+  const polling = new Map<string, { at: number; frames: unknown[] }>();
   let server: Server | null = null;
-  let sequence = 0;
+  let stopped = false;
+
+  const json = (res: ServerResponse, value: unknown, status = 200) => {
+    res.writeHead(status, { ...CORS, "content-type": "application/json" });
+    res.end(JSON.stringify(value));
+  };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // The bridge contains private meeting history and only listens on loopback.
+    if (
+      req.headers.origin &&
+      req.headers.origin !== "https://meet.google.com" &&
+      !/^chrome-extension:\/\/[a-p]{32}$/.test(req.headers.origin)
+    ) {
+      res.writeHead(403).end();
+      return;
+    }
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (req.method === "OPTIONS") {
       res.writeHead(204, CORS).end();
       return;
@@ -80,8 +119,84 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/meetings") {
+      const input = z
+        .object({
+          room: z.string().min(1).max(200),
+          label: z.string().min(1).max(200),
+          project: z.string().trim().min(1).max(120),
+        })
+        .parse(JSON.parse(await readBody(req)));
+      json(res, options.memory.start(input.room, input.label, input.project), 201);
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/meetings") {
+      json(res, options.memory.list(url.searchParams.get("project") ?? ""));
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/memory/search") {
+      const query = z.string().trim().min(1).max(1000).parse(url.searchParams.get("q"));
+      const project = z.string().trim().min(1).max(120).parse(url.searchParams.get("project"));
+      const hits = options.memory.search(project, query);
+      try {
+        json(res, { hits, synthesis: (await options.answer?.(query, hits)) ?? null });
+      } catch {
+        json(res, {
+          hits,
+          synthesis: null,
+          warning: "Answer unavailable. Original matching sources are shown below.",
+        });
+      }
+      return;
+    }
+    const meetingRoute = /^\/meetings\/([a-f0-9-]+)(?:\/(finish|export|context))?$/.exec(
+      url.pathname,
+    );
+    if (meetingRoute) {
+      const id = z.string().uuid().parse(meetingRoute[1]);
+      const meeting = options.memory.get(id);
+      if (req.method === "POST" && meetingRoute[2] === "finish") {
+        // Long transcripts outlive a browser request timeout.
+        void options.memory.finish(id).catch(() => {});
+        json(res, options.memory.get(id), 202);
+        return;
+      }
+      if (req.method === "GET" && meetingRoute[2] === "export") {
+        const markdown = options.memory.export(id);
+        res.writeHead(200, {
+          ...CORS,
+          "content-type": "text/markdown; charset=utf-8",
+          "content-disposition": `attachment; filename="Meeting-${id}.md"`,
+        });
+        res.end(markdown);
+        return;
+      }
+      if (req.method === "GET" && meetingRoute[2] === "context") {
+        const recent = options.memory
+          .events(id)
+          .slice(-3)
+          .map((e) => e.text)
+          .join(" ");
+        json(res, { hits: options.memory.search(meeting.project, recent, id) });
+        return;
+      }
+      if (req.method === "GET" && !meetingRoute[2]) {
+        json(res, meeting);
+        return;
+      }
+    }
+
     // The extension holds this open and renders whatever arrives.
-    if (req.method === "GET" && req.url === "/suggestions") {
+    if (req.method === "GET" && url.pathname === "/suggestions") {
+      const meetingId = z.string().uuid().parse(url.searchParams.get("meeting_id"));
+      options.memory.get(meetingId);
+      if (url.searchParams.get("poll") === "1") {
+        for (const [key, value] of polling) if (Date.now() - value.at > 60000) polling.delete(key);
+        const mailbox = polling.get(meetingId) ?? { at: Date.now(), frames: [] };
+        json(res, { frames: mailbox.frames });
+        polling.set(meetingId, { at: Date.now(), frames: [] });
+        return;
+      }
       res.writeHead(200, {
         ...CORS,
         "content-type": "text/event-stream",
@@ -89,30 +204,30 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         connection: "keep-alive",
       });
       res.write(": connected\n\n");
-      listeners.add(res);
+      listeners.set(res, meetingId);
       req.on("close", () => listeners.delete(res));
       return;
     }
 
     if (req.method === "POST" && req.url === "/captions") {
       try {
-        const payload = JSON.parse(await readBody(req)) as CaptionPayload;
+        const payload: CaptionPayload = CaptionSchema.parse(JSON.parse(await readBody(req)));
         const text = (payload.text ?? "").trim();
         if (text.length === 0) {
           res.writeHead(204, CORS).end();
           return;
         }
 
-        sequence++;
-        const meetingId = payload.meeting_id ?? "unknown-meeting";
+        const meetingId = payload.meeting_id!;
+        const meeting = options.memory.get(meetingId);
         const event = ContextEventSchema.parse({
           schema_version: "1.0.0",
-          event_id: `browser:${meetingId}:${payload.caption_id ?? `cap-${sequence}`}`,
+          event_id: `browser:${meetingId}:${payload.caption_id ?? randomUUID()}`,
           source: {
             adapter: "browser",
             surface_id: meetingId,
             surface_type: "live_meeting",
-            ...(payload.meeting_label ? { surface_label: payload.meeting_label } : {}),
+            surface_label: meeting.label,
           },
           actor: {
             actor_id: payload.speaker_id ?? payload.speaker_name ?? "unknown-speaker",
@@ -120,7 +235,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
             is_agent: false,
             ...(payload.speaker_role ? { role: payload.speaker_role } : {}),
           },
-          occurred_at: new Date().toISOString(),
+          occurred_at: payload.occurred_at ?? new Date().toISOString(),
           text,
           thread_id: null,
           reply_to_event_id: null,
@@ -128,7 +243,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
           metadata: { caption_offset_ms: payload.offset_ms ?? null },
         } satisfies Record<string, unknown>);
 
-        queue.push(event);
+        if (options.memory.append(event)) queue.push(event);
         res.writeHead(202, CORS).end();
       } catch (err) {
         res.writeHead(400, { ...CORS, "content-type": "application/json" });
@@ -144,22 +259,37 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
     name: "browser",
     async start() {
       server = createServer((req, res) => {
-        void handle(req, res);
+        void handle(req, res).catch((err) => {
+          if (!res.headersSent && !res.destroyed)
+            json(
+              res,
+              { error: err instanceof Error ? err.message : "Request failed" },
+              err instanceof z.ZodError ? 400 : 500,
+            );
+          else res.end();
+        });
       });
-      await new Promise<void>((resolve) => server?.listen(options.port, resolve));
+      await new Promise<void>((resolve, reject) => {
+        server?.once("error", reject);
+        server?.listen(options.port, "127.0.0.1", resolve);
+      });
       console.log(`  browser bridge listening on http://127.0.0.1:${options.port}`);
     },
     stream() {
       return queue;
     },
     async stop() {
+      if (stopped) return;
+      stopped = true;
       queue.close();
-      for (const res of listeners) res.end();
+      for (const res of listeners.keys()) res.end();
       listeners.clear();
+      polling.clear();
       await new Promise<void>((resolve) => {
         if (!server) return resolve();
         server.close(() => resolve());
       });
+      await options.memory.close();
     },
   };
 
@@ -183,12 +313,24 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         });
       }
 
-      if (listeners.size === 0) {
+      const recipients = [...listeners].filter(
+        ([, meetingId]) =>
+          decision.delivery?.actor_id === options.principalActorId &&
+          decision.delivery.surface_id === meetingId,
+      );
+      const mailbox =
+        decision.delivery.actor_id === options.principalActorId
+          ? polling.get(decision.delivery.surface_id ?? "")
+          : undefined;
+      if (recipients.length === 0 && (!mailbox || Date.now() - mailbox.at > 15000)) {
         return makeResult({
           decision,
           status: "failed",
           adapter: "browser",
-          error: { code: "no_panel_connected", message: "no extension is listening on /suggestions" },
+          error: {
+            code: "no_panel_connected",
+            message: "no extension is listening on /suggestions",
+          },
           latencyMs: Date.now() - started,
         });
       }
@@ -201,7 +343,11 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         sources: decision.draft?.sources ?? [],
         confidence: decision.confidence,
       });
-      for (const res of listeners) res.write(`data: ${frame}\n\n`);
+      for (const [res] of recipients) res.write(`data: ${frame}\n\n`);
+      if (mailbox) {
+        mailbox.frames.push(JSON.parse(frame));
+        mailbox.frames = mailbox.frames.slice(-20);
+      }
 
       return makeResult({
         decision,

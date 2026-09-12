@@ -28,6 +28,7 @@ export interface AppConfig {
 
   browser: {
     port: number;
+    memoryDir: string;
     /** Who the agent supports in a live meeting. Never broadcast. */
     principalActorId: string | null;
   };
@@ -96,12 +97,14 @@ export function loadConfig(overrides: ConfigOverrides = {}): AppConfig {
     },
 
     replay: {
-      transcriptPath: overrides.transcriptPath ?? str("REPLAY_TRANSCRIPT", "fixtures/transcripts/demo-main.json"),
+      transcriptPath:
+        overrides.transcriptPath ?? str("REPLAY_TRANSCRIPT", "fixtures/transcripts/demo-main.json"),
       speed: overrides.speed ?? num("REPLAY_SPEED", 4),
     },
 
     browser: {
       port: num("BROWSER_BRIDGE_PORT", 8787),
+      memoryDir: str("MEETING_MEMORY_DIR", "meeting-memory"),
       principalActorId: str("PRINCIPAL_ACTOR_ID") || null,
     },
 
@@ -130,14 +133,22 @@ export function assertUsable(config: AppConfig): void {
   const problems: string[] = [];
 
   if (config.llmProvider === "openai" && !config.openaiApiKey) {
-    problems.push("LLM_PROVIDER=openai but OPENAI_API_KEY is empty. Set it, or use LLM_PROVIDER=fake.");
+    problems.push(
+      "LLM_PROVIDER=openai but OPENAI_API_KEY is empty. Set it, or use LLM_PROVIDER=fake.",
+    );
   }
   if (config.adapter === "slack") {
-    if (!config.slack.botToken) problems.push("SLACK_BOT_TOKEN is empty. Copy it from the app Install page (xoxb-...).");
-    if (!config.slack.appToken) problems.push("SLACK_APP_TOKEN is empty. Create an app-level token with connections:write (xapp-...).");
+    if (!config.slack.botToken)
+      problems.push("SLACK_BOT_TOKEN is empty. Copy it from the app Install page (xoxb-...).");
+    if (!config.slack.appToken)
+      problems.push(
+        "SLACK_APP_TOKEN is empty. Create an app-level token with connections:write (xapp-...).",
+      );
   }
   if (config.adapter === "browser" && !config.browser.principalActorId) {
-    problems.push("PRINCIPAL_ACTOR_ID is empty. A live meeting needs to know who the agent is helping.");
+    problems.push(
+      "PRINCIPAL_ACTOR_ID is empty. A live meeting needs to know who the agent is helping.",
+    );
   }
 
   if (problems.length > 0) {
