@@ -16,6 +16,41 @@ taken away from you five minutes before the deadline. Record Slack as B-roll
 early (see [beat 2](#beat-2--0150045--it-is-really-in-slack)), and build the
 video on the replay.
 
+## Which provider you record with — decide this first
+
+There is a `.env` in the repo now, and it selects `LLM_PROVIDER=openai`. That
+changes what the take looks like, so choose deliberately instead of finding out
+while recording.
+
+| | `fake` | `openai` |
+| --- | --- | --- |
+| Run to run | **identical, every time** | varies |
+| Interventions in this transcript | **always 3** | measured 0, 1, 2 and 3 across four runs |
+| What the agent says | a restatement of the problem | a real answer that names who to ask |
+| Costs money | no | yes |
+
+**The numbers in this script are the `fake` numbers.** Every count below — 3
+interventions, 8 silences, 4 silence reasons — is what the deterministic
+provider produces. With `openai` they will not match, and a take can come out
+with the agent staying quiet all eleven times, which is not the video you want.
+
+To pin the deterministic run, put it in front of the command. A shell variable
+beats the `.env` file:
+
+```bash
+LLM_PROVIDER=fake npm run replay:demo
+```
+
+**Recommendation.** Record the replay with `fake`: it is the version this
+script describes, it cannot surprise you, and it cannot fail because somebody's
+API quota ran out mid-take. Then use `openai` for the live Slack segment in
+beat 2, where the message quality is what you are showing off and a single good
+take is all you need.
+
+If you do record the replay with `openai`, run it three times first and keep
+recording until you get a take with at least two interventions. Do not narrate
+counts you have not just seen on screen.
+
 ## Measured timings
 
 Wall clock, on a cold run, `LLM_PROVIDER=fake`:
@@ -49,6 +84,10 @@ node -v
 # 1. Clean state. decisions.jsonl APPENDS across runs: a stale file makes the
 #    jq counts in beat 3 lie, and that is the one number a judge might check.
 rm -rf logs/
+
+# 1b. Pin the provider. Without this the .env picks openai and the counts in
+#     this script stop matching. See the section above.
+export LLM_PROVIDER=fake
 
 # 2. Prove the machine is green before the camera is on, not after.
 npm run ci

@@ -12,15 +12,26 @@
 
 | # | Item | Owner | Status |
 | --- | --- | --- | --- |
-| 1 | Project title | Person 4 | TODO |
-| 2 | Written description | Person 4 | TODO |
-| 3 | Public repository | Person 1 | TODO |
-| 4 | 2 minute video | Person 4 | TODO |
-| 5 | Social post tagging the sponsors | Person 2 | TODO |
-| 6 | Submission form filled in | Person 3 | TODO |
+| 1 | Project title | Person 4 | **drafted below, needs a yes** |
+| 2 | Written description | Person 4 | **drafted below, needs a yes** |
+| 3 | Public repository | Person 1 | **DONE** — public, CI green, no secrets tracked |
+| 4 | 2 minute video | Person 4 | **TODO — the only blocker** |
+| 5 | Social post tagging the sponsors | Person 2 | drafted below, not posted |
+| 6 | Submission form filled in | Person 3 | TODO, blocked on 4 |
 
 Update this table as things land. A visible TODO at T+170 is worth more than
 somebody assuming it was handled.
+
+Verified at the last integration drill:
+
+- repo is public, `npm run ci` green on `main`, `npm run check:secrets` clean
+  across 112 tracked files, and `.env` is untracked and gitignored
+- all four branches merged, no open PRs
+- `LLM_PROVIDER=fake npm run replay:demo` gives the same 3 interventions and 8
+  explained silences every run, which is what [docs/DEMO.md](docs/DEMO.md) is
+  written against
+
+**Item 4 is the only thing standing between this and a submission.**
 
 ---
 
@@ -94,8 +105,11 @@ log.
 
 ## 4. Two minute video
 
-Record `npm run replay:demo`, not live Slack. The replay is deterministic and
-cannot be taken away by wifi.
+Record `LLM_PROVIDER=fake npm run replay:demo`, not live Slack. The replay is
+deterministic and cannot be taken away by wifi -- but only with the provider
+pinned. The `.env` now selects `openai`, and that run varies between 0 and 3
+interventions. [docs/DEMO.md](docs/DEMO.md) explains which to record with and
+why; read that section before the first take.
 
 | Time | Beat |
 | --- | --- |
