@@ -70,6 +70,13 @@ export interface DecisionLog {
     result: ActionResult | null;
     timings: DecisionLogRecord["timings_ms"];
   }): void;
+  /**
+   * A component threw and the event could not be decided. There is no valid
+   * DecisionLogRecord to write -- there is no decision -- but the run must
+   * still account for it, because an event that vanishes is the invisible
+   * decision this product exists to refuse.
+   */
+  noteFailure(input: { eventId: string; stage: string; error: string }): void;
   /** Printed once at the end of a replay. The scoreboard for the demo. */
   summary(): {
     events: number;
@@ -77,6 +84,8 @@ export interface DecisionLog {
     stayedQuiet: number;
     /** Decisions where a model call failed and the heuristics stood in. */
     degraded: number;
+    /** Events a component threw on. Counted so a crash is never invisible. */
+    failed: number;
     byReason: Record<string, number>;
     /**
      * Silence reasons only. Kept apart from byReason because "how many
@@ -120,7 +129,8 @@ function reasonBeyond(summary: string, rationale: string): string | null {
 
 export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
   const verbose = options.verbose ?? false;
-  const counts = { events: 0, spoke: 0, stayedQuiet: 0, degraded: 0 };
+  const counts = { events: 0, spoke: 0, stayedQuiet: 0, degraded: 0, failed: 0 };
+  const failures: { eventId: string; stage: string; error: string }[] = [];
   const byReason: Record<string, number> = {};
   const bySilenceReason: Record<string, number> = {};
   let sequence = 0;
@@ -234,6 +244,11 @@ export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
       if (options.pretty) printBlock(record);
     },
 
+    noteFailure(input) {
+      counts.failed++;
+      failures.push(input);
+    },
+
     summary() {
       return {
         ...counts,
@@ -257,6 +272,13 @@ export function printSummary(log: DecisionLog): void {
     for (const [reason, count] of reasons) {
       console.log(`    ${String(count).padStart(3)}  ${reason}`);
     }
+  }
+
+  if (s.failed > 0) {
+    console.log(
+      `\n  ${paint(C.red, "!")} ${paint(C.bold, String(s.failed))} event(s) could not be decided: ` +
+        `a component threw.\n    The run continued. Search the log above for "threw" to see which.`,
+    );
   }
 
   // Never let a run that fell back to regex be mistaken for a run that used
