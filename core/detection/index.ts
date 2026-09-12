@@ -8,6 +8,7 @@ import {
   type WindowContext,
 } from "@contracts";
 import { humansOnly, prefilter, type HeuristicHit } from "./heuristics";
+import { applyTiming } from "./timing";
 
 /**
  * Perception. Answers one question: is there anything in this conversation
@@ -21,7 +22,7 @@ import { humansOnly, prefilter, type HeuristicHit } from "./heuristics";
  */
 
 export const DETECTOR_NAME = "llm-detector";
-export const DETECTOR_VERSION = "0.1.0";
+export const DETECTOR_VERSION = "0.2.0";
 
 export const DETECTOR_PROMPT_ID = "detector.conversation_scan";
 
@@ -52,6 +53,8 @@ interface ModelVerdict {
   summary: string;
   confidence: number;
   subject_actor_id: string | null;
+  /** The line that states the need. Prompts before v2 do not return it. */
+  need_event_id: string | null;
   evidence: { event_id: string; quote: string }[];
 }
 
@@ -71,6 +74,9 @@ function clamp01(n: unknown, fallback: number): number {
   const v = typeof n === "number" && Number.isFinite(n) ? n : fallback;
   return Math.min(1, Math.max(0, v));
 }
+
+const nonEmptyString = (v: unknown): string | null =>
+  typeof v === "string" && v.length > 0 ? v : null;
 
 function parseVerdict(raw: string, hint: HeuristicHit | undefined): ModelVerdict {
   let obj: Record<string, unknown> = {};
@@ -100,10 +106,8 @@ function parseVerdict(raw: string, hint: HeuristicHit | undefined): ModelVerdict
         ? obj["summary"].slice(0, 600)
         : (hint?.note ?? "Nothing actionable in this window."),
     confidence: clamp01(obj["confidence"], hint?.strength ?? 0.1),
-    subject_actor_id:
-      typeof obj["subject_actor_id"] === "string" && obj["subject_actor_id"].length > 0
-        ? obj["subject_actor_id"]
-        : (hint?.event.actor.actor_id ?? null),
+    subject_actor_id: nonEmptyString(obj["subject_actor_id"]) ?? hint?.event.actor.actor_id ?? null,
+    need_event_id: nonEmptyString(obj["need_event_id"]),
     evidence,
   };
 }
@@ -188,10 +192,20 @@ export function createDetector(
 
       const verdict = parseVerdict(response.text, top);
 
+      // The model names the need; code decides whether the newest line is the
+      // moment to report it. Without a need_event_id, the first citation is the
+      // best guess at the line that states the need.
+      const timed = applyTiming(
+        verdict.kind,
+        verdict.confidence,
+        verdict.need_event_id ?? verdict.evidence[0]?.event_id ?? top?.event.event_id ?? null,
+        window,
+      );
+
       // The model is allowed to say no_signal even when the cheap pass fired.
       // That is the point of having it.
       const evidence =
-        verdict.kind === "no_signal"
+        timed.kind === "no_signal"
           ? []
           : verdict.evidence.length > 0
             ? verdict.evidence.map((e) => ({
@@ -209,11 +223,11 @@ export function createDetector(
       return [
         makeObservation({
           events: window,
-          kind: verdict.kind,
-          summary: verdict.summary,
-          confidence: verdict.kind === "no_signal" ? Math.min(verdict.confidence, 0.3) : verdict.confidence,
+          kind: timed.kind,
+          summary: timed.note ?? verdict.summary,
+          confidence: timed.kind === "no_signal" ? Math.min(timed.confidence, 0.3) : timed.confidence,
           evidence,
-          subjectActorId: verdict.kind === "no_signal" ? null : verdict.subject_actor_id,
+          subjectActorId: timed.kind === "no_signal" ? null : verdict.subject_actor_id,
           detector: {
             name: DETECTOR_NAME,
             version: DETECTOR_VERSION,
