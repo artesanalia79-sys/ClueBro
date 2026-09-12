@@ -76,6 +76,12 @@ export interface DecisionLog {
     spoke: number;
     stayedQuiet: number;
     byReason: Record<string, number>;
+    /**
+     * Silence reasons only. Kept apart from byReason because "how many
+     * different ways did it decide not to speak" is the number the product is
+     * judged on, and mixing the speak reasons in hides it.
+     */
+    bySilenceReason: Record<string, number>;
   };
 }
 
@@ -87,6 +93,7 @@ export interface DecisionLogOptions {
 export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
   const counts = { events: 0, spoke: 0, stayedQuiet: 0 };
   const byReason: Record<string, number> = {};
+  const bySilenceReason: Record<string, number> = {};
   let sequence = 0;
 
   if (options.file) mkdirSync(dirname(options.file), { recursive: true });
@@ -171,13 +178,21 @@ export function createDecisionLog(options: DecisionLogOptions): DecisionLog {
       if (record.decision.act) counts.spoke++;
       else counts.stayedQuiet++;
       byReason[record.decision.reason_code] = (byReason[record.decision.reason_code] ?? 0) + 1;
+      if (!record.decision.act) {
+        bySilenceReason[record.decision.reason_code] =
+          (bySilenceReason[record.decision.reason_code] ?? 0) + 1;
+      }
 
       if (options.file) appendFileSync(options.file, `${JSON.stringify(record)}\n`, "utf8");
       if (options.pretty) printBlock(record);
     },
 
     summary() {
-      return { ...counts, byReason: { ...byReason } };
+      return {
+        ...counts,
+        byReason: { ...byReason },
+        bySilenceReason: { ...bySilenceReason },
+      };
     },
   };
 }
@@ -188,9 +203,10 @@ export function printSummary(log: DecisionLog): void {
   console.log(`  events seen     ${s.events}`);
   console.log(`  spoke           ${paint(C.green, String(s.spoke))}`);
   console.log(`  stayed quiet    ${paint(C.yellow, String(s.stayedQuiet))}`);
-  const reasons = Object.entries(s.byReason).sort((a, b) => b[1] - a[1]);
+
+  const reasons = Object.entries(s.bySilenceReason).sort((a, b) => b[1] - a[1]);
   if (reasons.length > 0) {
-    console.log(`  reasons`);
+    console.log(`\n  ${paint(C.yellow, "why it stayed quiet")}`);
     for (const [reason, count] of reasons) {
       console.log(`    ${String(count).padStart(3)}  ${reason}`);
     }
