@@ -56,6 +56,16 @@ try {
     0,
     "FTS operators are not interpreted as user syntax",
   );
+  // "for" is common enough in English notes ("scheduled for Thursday") that
+  // treating it as a search term matched almost any note against almost any
+  // sentence containing it — a filler line like "thanks for hopping on" once
+  // pulled up an unrelated meeting purely on that word.
+  memory.append(event(second.id, "for-check", "The launch date is set for the 19th."));
+  assert.equal(
+    memory.search("launch", "Thanks for hopping on today", first.id).length,
+    0,
+    "common English function words like \"for\" are not search terms",
+  );
   await memory.close();
   memory = new MeetingMemory(root, "owner-a", extract);
   assert.equal(

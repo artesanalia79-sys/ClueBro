@@ -54,8 +54,13 @@ export interface NoteHit {
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 24);
 const clean = (s: string) => s.replace(/([\\`*_{}\[\]<>#|])/g, "\\$1").replace(/[\r\n]+/g, " ");
 const words = (s: string) => [...new Set(s.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
+// "for" was the gap that mattered: it is 3+ letters, so it passed the length
+// floor, and it is common enough in English notes ("scheduled for Thursday",
+// "budget for the launch") that almost any sentence containing it matched
+// almost any note. A short filler line ("thanks for hopping on") pulled up an
+// unrelated meeting purely on that word.
 const STOP = new Set(
-  "the and that this what when where with from have was were about does did how para que qué como cómo cuándo donde dónde una los las del con por sobre hemos acordamos dijo reunión meeting".split(
+  "the and that this what when where with from have has had was were about does did how for not but are will can get got out its our your you who all just para que qué como cómo cuándo donde dónde una los las del con por sobre hemos acordamos dijo reunión meeting".split(
     " ",
   ),
 );
