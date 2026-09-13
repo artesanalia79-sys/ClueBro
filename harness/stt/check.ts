@@ -52,7 +52,12 @@ const open = createOpenAiTranscription({
   delay: "low",
   url: `ws://127.0.0.1:${port}`,
 });
-const stream = open({ onLine: (text) => lines.push(text), onError: (error) => errors.push(error.message) });
+const reasons: string[] = [];
+const stream = open({
+  onLine: (text) => lines.push(text),
+  onError: (error) => errors.push(error.message),
+  onCommit: (info) => reasons.push(info.reason),
+});
 
 // Sent before the socket opens: held, not dropped. Two seconds of speech and
 // a sentence-ending pause.
@@ -111,6 +116,12 @@ stream.close();
 await settle();
 checkEqual("hanging up mid-sentence keeps the last sentence", commits, 5);
 checkEqual("and it is delivered before the socket closes", lines.at(-1), "Line 5.");
+
+checkEqual(
+  "every cut says why it happened",
+  JSON.stringify(reasons),
+  JSON.stringify(["pause", "pause", "long-pause", "max-length", "hang-up"]),
+);
 
 server.close();
 report("harness/stt openai realtime");

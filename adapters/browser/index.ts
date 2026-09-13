@@ -44,6 +44,16 @@ export interface BrowserBridgeOptions {
 export type OpenTranscription = (handlers: {
   onLine(text: string): void;
   onError(error: Error): void;
+  /** Why an utterance was cut into a line, for diagnosing broken sentences. */
+  onCommit?(info: {
+    reason: "pause" | "long-pause" | "max-length" | "hang-up";
+    utteranceMs: number;
+    speechMs: number;
+    silenceMs: number;
+    medianLevel: number;
+    quietLevel: number;
+    threshold: number;
+  }): void;
 }) => { append(pcm16: Buffer): void; close(): void };
 
 interface CaptionPayload {
@@ -167,6 +177,16 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       onError(error) {
         console.log(`  audio: ${source} transcription failed: ${error.message}`);
         socket.close(1011, error.message.slice(0, 120));
+      },
+      // Broken sentences have several possible causes that look identical in
+      // the transcript: a real pause, a quiet microphone, or noise the
+      // threshold takes for speech. This line tells them apart.
+      onCommit(info) {
+        console.log(
+          `  audio: ${source} cut (${info.reason}) after ${(info.utteranceMs / 1000).toFixed(1)}s, ` +
+            `${(info.speechMs / 1000).toFixed(1)}s above threshold, level ${info.medianLevel} ` +
+            `(quiet ${info.quietLevel}, threshold ${info.threshold})`,
+        );
       },
     });
     socket.on("message", (data: RawData, isBinary: boolean) => {

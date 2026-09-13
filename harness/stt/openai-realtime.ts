@@ -40,6 +40,12 @@ const CLOSE_GRACE_MS = 3_000;
 // that never opens must not turn a meeting into unbounded memory.
 const MAX_BACKLOG = 400;
 
+const percentile = (values: number[], p: number): number => {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return Math.round(sorted[Math.floor((sorted.length - 1) * p)]!);
+};
+
 const rms = (chunk: Buffer): number => {
   const samples = Math.floor(chunk.length / 2);
   if (samples === 0) return 0;
@@ -52,7 +58,7 @@ const rms = (chunk: Buffer): number => {
 };
 
 export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): OpenTranscription {
-  return ({ onLine, onError }) => {
+  return ({ onLine, onError, onCommit }) => {
     const socket = new WebSocket(options.url ?? "wss://api.openai.com/v1/realtime?intent=transcription", {
       headers: { Authorization: `Bearer ${options.apiKey}` },
     });
@@ -64,6 +70,9 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
     let speechMs = 0;
     let silenceMs = 0;
     let utteranceMs = 0;
+    // Levels of the current utterance, kept so each cut can report whether it
+    // was a real pause or a microphone too quiet or too noisy for the threshold.
+    let levels: number[] = [];
 
     const send = (message: object) => {
       const serialized = JSON.stringify(message);
@@ -74,8 +83,18 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
     // This model rejects server-side turn detection, so the sentence
     // boundaries are ours to draw: without a commit it streams partial text
     // forever and never finishes a line.
-    const commit = () => {
+    const commit = (reason: "pause" | "long-pause" | "max-length" | "hang-up") => {
       if (!heardSpeech) return;
+      onCommit?.({
+        reason,
+        utteranceMs: Math.round(utteranceMs),
+        speechMs: Math.round(speechMs),
+        silenceMs: Math.round(silenceMs),
+        medianLevel: percentile(levels, 0.5),
+        quietLevel: percentile(levels, 0.2),
+        threshold: SPEECH_RMS,
+      });
+      levels = [];
       send({ type: "input_audio_buffer.commit" });
       awaiting++;
       heardSpeech = false;
@@ -134,7 +153,8 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
         if (closing) return;
         send({ type: "input_audio_buffer.append", audio: chunk.toString("base64") });
         const ms = chunk.length / BYTES_PER_MS;
-        if (rms(chunk) >= SPEECH_RMS) {
+        const level = rms(chunk);
+        if (level >= SPEECH_RMS) {
           heardSpeech = true;
           speechMs += ms;
           silenceMs = 0;
@@ -143,19 +163,17 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
         }
         if (!heardSpeech) return;
         utteranceMs += ms;
-        if (
-          silenceMs >= LONG_SILENCE_MS ||
-          (silenceMs >= SILENCE_TO_COMMIT_MS && speechMs >= MIN_SPEECH_MS) ||
-          utteranceMs >= MAX_UTTERANCE_MS
-        )
-          commit();
+        if (levels.length < 400) levels.push(level);
+        if (silenceMs >= LONG_SILENCE_MS) commit("long-pause");
+        else if (silenceMs >= SILENCE_TO_COMMIT_MS && speechMs >= MIN_SPEECH_MS) commit("pause");
+        else if (utteranceMs >= MAX_UTTERANCE_MS) commit("max-length");
       },
       close() {
         if (closing) return;
         closing = true;
         // The call ending mid-sentence is the normal case, not an edge case:
         // the last thing said before hanging up is often the decision.
-        commit();
+        commit("hang-up");
         if (awaiting === 0) socket.close();
         else setTimeout(() => socket.close(), CLOSE_GRACE_MS).unref();
       },
