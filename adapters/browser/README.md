@@ -19,15 +19,19 @@ Requires Node **22.13 or newer** (built-in SQLite) and Chrome/Edge.
 4. Run `npm run dev:meet`.
 5. Load `adapters/browser/extension` as an unpacked extension in
    `chrome://extensions` (or reload it if already installed), then reload Meet.
-6. Enable Meet captions. Enter a project in the panel and click **Start saving**.
-7. Click **Finish & organize** before leaving. Captions are already in SQLite;
-   note extraction continues in the bridge process. History shows its progress
-   and offers a retry if the model fails.
+6. Enable Meet captions and join the call. Saving starts on its own once the
+   call is live and the panel says so; **Start saving** does the same by hand.
+7. Leaving the call closes the session and starts organizing. **Finish &
+   organize** does it by hand. Captions are already in SQLite; note extraction
+   continues in the bridge process. History shows its progress and offers a
+   retry if the model fails.
+8. Optional, for better transcripts: set `OPENAI_TRANSCRIBE_API_KEY` and click
+   the ClueBro toolbar button during the call. See *Call audio* below.
 
 Use the same project name for related meetings, even when their Meet links differ.
 Each new session gets a UUID; reusing a meeting URL does not merge its history.
 An unfinished session can be restored from History and then resumed or finished.
-Reloading a tab restores its session without silently restarting capture.
+Reloading a tab restores its session; capture resumes once the call is live again.
 
 The extension queues captions in `chrome.storage.local` before sending them.
 Keep the tab open to let queued uploads retry when the bridge is offline. If you
@@ -76,7 +80,7 @@ The default directory is excluded from Git; exclude a custom directory yourself.
   source IDs. The original excerpts remain visible. On failure, only excerpts
   are shown. Citation validation does not prove every interpretation is correct.
 - While saving, the panel checks recent captions for matching excerpts from other
-  meetings in the same project every 15 seconds. Typing a query pauses automatic
+  meetings in the same project every 4 seconds. Typing a query pauses automatic
   replacement of results.
 - Closing commits immediately and starts background organization. Extraction
   checkpoints make retries idempotent and survive restarts. A stopped process
@@ -88,8 +92,32 @@ suggestions by session and principal. Any local process with access to the bridg
 or files has that operator's access. The service worker limits requests to the
 bridge and accepts messages only from this extension's Meet content scripts.
 When AI is enabled, relevant transcript batches and retrieved excerpts are sent
-to the configured model provider. No audio is recorded and nothing is posted
-into the meeting.
+to the configured model provider. Nothing is posted into the meeting. Audio is
+recorded only after the toolbar button is clicked, while the badge reads
+**REC**, and it is streamed to OpenAI for transcription.
+
+## Call audio
+
+Meet's captions are weak in Spanish and rarely name the speaker. With
+`OPENAI_TRANSCRIBE_API_KEY` set (a direct OpenAI key, not the chat provider's),
+the bridge accepts audio and transcribes it with `gpt-live-transcribe`.
+
+1. Click the ClueBro toolbar button in the Meet tab. Chrome allows recording a
+   tab only from the extension's own button, not from the panel. Click it again
+   to stop.
+2. The first time, a tab opens to allow the microphone. Until it is allowed,
+   only the other participants are transcribed.
+3. The tab stays audible. The recorder plays the call back, because Chrome
+   silences a tab while it is being recorded.
+
+Two streams are recorded: the tab (other participants, stored as **Others**)
+and the microphone (you, stored as **You**). The transcriber returns no speaker
+labels, so this is the only attribution available. Use headphones: without
+them the microphone also picks up the other participants.
+
+While audio is recorded, Meet captions are not stored, so nothing is saved
+twice. A sentence ends after 700 ms of silence, or after fifteen seconds of
+continuous speech, and is stored about a second later.
 
 ## Caption limitations
 
@@ -114,6 +142,7 @@ are stored as **Unknown speaker**, not guessed. Verify selectors on a real call.
 | GET | `/memory/search?project=…&q=…` | Search excerpts and optional AI answer |
 | GET | `/suggestions?meeting_id=…&poll=1` | Private live suggestions, polled by extension |
 | GET | `/suggestions?meeting_id=…` | SSE alternative for local clients |
+| WS | `/audio?meeting_id=…&speaker=self\|room` | 24 kHz PCM16 in; finished lines stored as captions |
 
 The bridge's request routing uses the service-worker pattern described in
 [Chrome's cross-origin request documentation](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests).
@@ -122,7 +151,7 @@ The bridge's request routing uses the service-worker pattern described in
 
 `npm run ci` includes memory persistence/restart, idempotency, citation rejection,
 project/principal isolation, vault link checks, HTTP validation and private routing.
-DOM tests cover explicit capture, nested captions, incremental subtitles, offline
+DOM tests cover automatic capture, audio handover, nested captions, incremental subtitles, offline
 queues, source rendering, finish controls and worker request restrictions. Tests
 use synthetic transcripts and no paid API calls. `npm run replay:meet` still
 demonstrates the original core; it does not populate the persistent meeting vault.

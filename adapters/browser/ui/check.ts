@@ -40,6 +40,8 @@ Object.assign(window, {
       },
     },
     runtime: {
+      id: "test",
+      onMessage: { addListener: () => {} },
       sendMessage: async (message: { path: string; body?: Record<string, unknown> }) => {
         if (message.path === "/captions") {
           sent.push(structuredClone(message.body!));
@@ -162,6 +164,10 @@ try {
   let finished = false;
   const store: Record<string, unknown> = {};
   const meeting = { ...session, id: "6f1c0f04-0a3b-4a1e-9c23-7a3f5d0e21bb", ended_at: null };
+  let autoListener:
+    | ((message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean)
+    | undefined;
+  const runtimeTypes: string[] = [];
   Object.assign(auto, {
     chrome: {
       storage: {
@@ -171,7 +177,15 @@ try {
         },
       },
       runtime: {
-        sendMessage: async (message: { path: string; body?: Record<string, unknown> }) => {
+        id: "test",
+        onMessage: {
+          addListener: (fn: typeof autoListener) => {
+            autoListener = fn;
+          },
+        },
+        sendMessage: async (message: { type?: string; path: string; body?: Record<string, unknown> }) => {
+          runtimeTypes.push(message.type ?? "");
+          if (!message.path) return { status: 200, text: "" };
           if (message.path === "/captions") {
             captions.push(structuredClone(message.body!));
             return { status: 202, text: "" };
@@ -239,6 +253,28 @@ try {
     for (let i = 0; i < 4; i++) await tickAuto(1300);
     assert.equal(captions.length, afterStopping, "an explicit stop is not undone by the watcher");
 
+    // The toolbar button attaches the call's audio to the panel's session, and
+    // while it records, Meet's captions are not stored a second time.
+    const audioReply = await new Promise<{ meeting_id?: string; error?: string }>((resolve) => {
+      autoListener!({ type: "cluebro-capture-begin" }, { id: "test" }, resolve as (value: unknown) => void);
+    });
+    assert.equal(audioReply.meeting_id, meeting.id, "recorded audio is attached to the panel's session");
+    const beforeAudio = captions.length;
+    auto.document.querySelector("#caption")!.textContent = "Captions while the audio is recorded.";
+    for (let i = 0; i < 4; i++) await tickAuto(1300);
+    assert.equal(captions.length, beforeAudio, "Meet captions are not stored while audio carries the call");
+
+    autoListener!({ type: "cluebro-capture-status", state: "stopped" }, { id: "test" }, () => {});
+    auto.document.querySelector("#caption")!.textContent = "Captions after the recorder stopped.";
+    for (let i = 0; i < 4; i++) await tickAuto(1300);
+    assert.equal(captions.length, beforeAudio + 1, "stopping the recorder hands the transcript back to captions");
+
+    autoListener!({ type: "cluebro-capture-begin" }, { id: "test" }, () => {});
+    await settleAuto();
+    (auto.document.querySelector("#cluebro-panel .finish") as unknown as HTMLButtonElement).click();
+    await settleAuto();
+    assert.ok(runtimeTypes.includes("cluebro-capture-end"), "finishing the meeting stops the recorder");
+
     // Reloading the extension kills this page's channel to it. The panel has
     // to say what fixes that, because nothing here can fix it on its own.
     (auto as unknown as { chrome: { runtime: { sendMessage: () => Promise<never> } } }).chrome.runtime.sendMessage =
@@ -256,7 +292,11 @@ try {
 }
 
 let listener: (message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean;
+let clicked: ((tab: unknown) => void) | undefined;
 const fetched: string[] = [];
+const workerCalls: string[] = [];
+const workerSent: Record<string, unknown>[] = [];
+const sessionStore: Record<string, unknown> = {};
 runInNewContext(readFileSync(new URL("../extension/background.js", import.meta.url), "utf8"), {
   chrome: {
     runtime: {
@@ -264,6 +304,55 @@ runInNewContext(readFileSync(new URL("../extension/background.js", import.meta.u
       onMessage: {
         addListener: (fn: typeof listener) => {
           listener = fn;
+        },
+      },
+      getURL: (path: string) => `chrome-extension://test/${path}`,
+      getContexts: async () => [],
+      sendMessage: async (message: Record<string, unknown>) => {
+        workerSent.push(message);
+      },
+    },
+    action: {
+      onClicked: {
+        addListener: (fn: typeof clicked) => {
+          clicked = fn;
+        },
+      },
+      setBadgeText: async (details: { text: string }) => {
+        workerCalls.push(`badge:${details.text}`);
+      },
+      setBadgeBackgroundColor: async () => {},
+    },
+    tabs: {
+      onRemoved: { addListener: () => {} },
+      sendMessage: async (_tabId: number, message: { type: string }) =>
+        message.type === "cluebro-capture-begin"
+          ? { meeting_id: "6f1c0f04-0a3b-4a1e-9c23-7a3f5d0e21bb" }
+          : undefined,
+      create: async () => {},
+    },
+    tabCapture: {
+      getMediaStreamId: async (options: { targetTabId: number }) => {
+        workerCalls.push(`capture:${options.targetTabId}`);
+        return "stream-1";
+      },
+    },
+    offscreen: {
+      createDocument: async (options: { reasons: string[] }) => {
+        workerCalls.push(`offscreen:${options.reasons.join(",")}`);
+      },
+      closeDocument: async () => {
+        workerCalls.push("offscreen:closed");
+      },
+    },
+    storage: {
+      session: {
+        get: async (key: string) => ({ [key]: sessionStore[key] }),
+        set: async (data: Record<string, unknown>) => {
+          Object.assign(sessionStore, data);
+        },
+        remove: async (key: string) => {
+          delete sessionStore[key];
         },
       },
     },
@@ -287,6 +376,36 @@ assert.equal(
   1,
   "the worker must reject arbitrary destinations and external senders",
 );
+
+// The toolbar button is the only invocation Chrome accepts for recording a
+// tab. It asks the panel for the session, starts a recorder with no
+// silence-based lifetime, shows that it is recording, and a second click stops.
+const meetTab = { id: 7, url: "https://meet.google.com/abc-defg-hij" };
+const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+clicked!(meetTab);
+await flush();
+assert.ok(workerCalls.includes("capture:7"), "the Meet tab that was clicked is the one recorded");
+assert.ok(
+  workerCalls.includes("offscreen:USER_MEDIA"),
+  "the recorder is not given AUDIO_PLAYBACK, which closes after thirty silent seconds",
+);
+assert.equal(
+  workerSent.find((m) => m.type === "cluebro-offscreen-start")?.meetingId,
+  "6f1c0f04-0a3b-4a1e-9c23-7a3f5d0e21bb",
+  "recorded audio goes to the panel's session",
+);
+assert.ok(workerCalls.includes("badge:REC"), "the recording stays visible on the toolbar");
+clicked!(meetTab);
+await flush();
+assert.ok(workerSent.some((m) => m.type === "cluebro-offscreen-stop"), "a second click stops the recorder");
+assert.ok(workerCalls.includes("badge:"), "and clears the badge");
+clicked!({ id: 9, url: "https://example.com/" });
+await flush();
+assert.equal(
+  workerCalls.filter((call) => call.startsWith("capture:")).length,
+  1,
+  "a tab outside Meet is never recorded",
+);
 console.log(
-  "Meeting panel: automatic session, caption stability, offline queue, sources, finish and worker restrictions passed.",
+  "Meeting panel: automatic session, audio handover, caption stability, offline queue, sources, finish, recorder toggle and worker restrictions passed.",
 );

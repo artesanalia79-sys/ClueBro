@@ -50,7 +50,8 @@
     lastContext = "",
     lastContextAt = 0,
     wasInCall = false,
-    manualStop = false;
+    manualStop = false,
+    audioActive = false;
   const panel = document.createElement("aside");
   panel.id = "cluebro-panel";
   panel.setAttribute("aria-label", "ClueBro meeting memory");
@@ -59,7 +60,7 @@
     <div class="panel-content">
       <p class="state" role="status" aria-live="polite">Ready when you are.</p>
       <label class="project-label">Project<input class="project" maxlength="120" placeholder="e.g. Product launch" /></label>
-      <p class="hint">Saving starts when you join the call and stops when you leave. Captions stay on this machine. Use the same project to connect meetings. Turn on Meet captions.</p>
+      <p class="hint">Saving starts when you join the call and stops when you leave. Captions stay on this machine. For better transcripts, click the ClueBro toolbar button to record the call's audio instead. Use the same project to connect meetings. Turn on Meet captions.</p>
       <div class="actions"><button class="start primary" type="button">Start saving</button><button class="finish" type="button" disabled>Finish & organize</button></div>
       <nav aria-label="Memory views"><button class="view active" data-view="context" type="button">Context</button><button class="view" data-view="history" type="button">History</button></nav>
       <section class="context-view"><form class="search"><label class="sr-only" for="cluebro-query">Search project memory</label><input id="cluebro-query" maxlength="1000" placeholder="What did we agree about delivery?" required /><button type="submit" aria-label="Search memory">↗</button></form><div class="memory-results"><p class="empty">Your previous meetings will appear here as the conversation develops.</p></div><div class="cards"></div></section>
@@ -178,7 +179,9 @@
     if (text) void enqueue(text, candidate.speaker);
   }
   function scan() {
-    if (!recording) return;
+    // While the call's audio is recorded, Meet's captions would store every
+    // sentence a second time.
+    if (!recording || audioActive) return;
     const container = SELECTORS.map((s) => document.querySelector(s)).find(Boolean),
       now = Date.now();
     if (container) {
@@ -379,6 +382,7 @@
     scan();
     working = true;
     recording = false;
+    endAudioCapture();
     for (const candidate of candidates.values()) flushCandidate(candidate);
     controls();
     try {
@@ -408,6 +412,52 @@
       controls();
     }
   }
+  function endAudioCapture() {
+    if (!audioActive) return;
+    audioActive = false;
+    // Nothing may be listening, and a stale content script throws before it
+    // returns a promise at all; neither should surface as a page error.
+    try {
+      void chrome.runtime.sendMessage({ type: "cluebro-capture-end" }).catch(() => {});
+    } catch {}
+  }
+  // Chrome only lets the extension record a tab from its toolbar button, so
+  // the background asks this panel which session the audio belongs to.
+  chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (sender.id !== chrome.runtime.id) return false;
+    if (message?.type === "cluebro-capture-begin") {
+      void (async () => {
+        if (!recording) {
+          manualStop = false;
+          await startSaving(false);
+        }
+        if (!recording || !meeting) {
+          reply({ error: "Enter a project in the panel, then click the ClueBro button again." });
+          return;
+        }
+        audioActive = true;
+        candidates = new Map();
+        status("Recording this call's audio, other participants and your microphone, to transcribe it.");
+        reply({ meeting_id: meeting.id });
+      })();
+      return true;
+    }
+    if (message?.type === "cluebro-capture-status") {
+      if (message.state === "stopped") {
+        audioActive = false;
+        status("Audio recording stopped. Meet captions are saved again while saving.");
+      } else if (message.state === "mic-denied") {
+        status("Microphone blocked: only the other participants are transcribed. Allow it in the tab ClueBro opened.");
+      } else if (message.state === "mic-error") {
+        status(`Microphone unavailable, only the other participants are transcribed. ${message.detail}`);
+      } else if (message.state === "error") {
+        audioActive = false;
+        status(`Audio recording failed: ${message.detail}. Meet captions are saved instead.`);
+      }
+      return false;
+    }
+    return false;
+  });
   el(".start").onclick = () => void startSaving(false);
   el(".finish").onclick = () => {
     // Captions keep flowing after an explicit stop, and captions are one of
@@ -469,6 +519,7 @@
   // worker outlives this page, so handing the request over there is what
   // makes the transcript survive.
   addEventListener("pagehide", () => {
+    endAudioCapture();
     if (!recording || !meeting) return;
     recording = false;
     try {
