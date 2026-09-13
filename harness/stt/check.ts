@@ -54,9 +54,10 @@ const open = createOpenAiTranscription({
 });
 const stream = open({ onLine: (text) => lines.push(text), onError: (error) => errors.push(error.message) });
 
-// Sent before the socket opens: held, not dropped.
-for (let i = 0; i < 10; i++) stream.append(speech());
-for (let i = 0; i < 8; i++) stream.append(silence());
+// Sent before the socket opens: held, not dropped. Two seconds of speech and
+// a sentence-ending pause.
+for (let i = 0; i < 20; i++) stream.append(speech());
+for (let i = 0; i < 13; i++) stream.append(silence());
 await settle();
 
 checkEqual("the key travels as a bearer token", authorization, "Bearer sk-test");
@@ -72,18 +73,34 @@ checkEqual("server-side turn detection is off, because this model rejects it", i
 checkEqual(
   "audio sent before the socket opened is not lost",
   received.filter((e) => e.type === "input_audio_buffer.append").length,
-  18,
+  33,
 );
-checkEqual("speech followed by a pause ends exactly one sentence", commits, 1);
+checkEqual("a sentence followed by a pause ends exactly one line", commits, 1);
 checkEqual("the finished line reaches the caller, trimmed", JSON.stringify(lines), JSON.stringify(["Line 1."]));
 
-for (let i = 0; i < 20; i++) stream.append(silence());
+// Half a second of speech, a normal mid-sentence pause, then the rest of the
+// sentence: one line, not two loose fragments.
+for (let i = 0; i < 5; i++) stream.append(speech());
+for (let i = 0; i < 13; i++) stream.append(silence());
 await settle();
-checkEqual("two seconds of silence commit nothing", commits, 1);
+checkEqual("a pause after a few words does not cut the sentence", commits, 1);
+for (let i = 0; i < 10; i++) stream.append(speech());
+for (let i = 0; i < 13; i++) stream.append(silence());
+await settle();
+checkEqual("the sentence ends once enough of it has been said", commits, 2);
+
+for (let i = 0; i < 5; i++) stream.append(speech());
+for (let i = 0; i < 26; i++) stream.append(silence());
+await settle();
+checkEqual("a short answer on its own still ends after a long silence", commits, 3);
+
+for (let i = 0; i < 30; i++) stream.append(silence());
+await settle();
+checkEqual("silence alone commits nothing", commits, 3);
 
 for (let i = 0; i < 160; i++) stream.append(speech());
 await settle();
-checkEqual("sixteen seconds without a pause still produce a line", commits, 2);
+checkEqual("sixteen seconds without a pause still produce a line", commits, 4);
 
 peer?.send(JSON.stringify({ type: "error", error: { message: "rate limited" } }));
 await settle();
@@ -92,8 +109,8 @@ check("a vendor error reaches the caller", errors.some((message) => message.incl
 for (let i = 0; i < 5; i++) stream.append(speech());
 stream.close();
 await settle();
-checkEqual("hanging up mid-sentence keeps the last sentence", commits, 3);
-checkEqual("and it is delivered before the socket closes", lines.at(-1), "Line 3.");
+checkEqual("hanging up mid-sentence keeps the last sentence", commits, 5);
+checkEqual("and it is delivered before the socket closes", lines.at(-1), "Line 5.");
 
 server.close();
 report("harness/stt openai realtime");

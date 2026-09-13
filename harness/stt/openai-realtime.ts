@@ -23,8 +23,14 @@ export interface OpenAiTranscriptionOptions {
 const BYTES_PER_MS = 48;
 // Above background hiss, well below conversational speech.
 const SPEECH_RMS = 600;
-// A pause this long after speech ends the sentence.
-const SILENCE_TO_COMMIT_MS = 700;
+// People pause mid-sentence for longer than 700 ms; ending a line there cut
+// every thought into loose words. A pause this long ends a sentence...
+const SILENCE_TO_COMMIT_MS = 1_200;
+// ...but only once there has been this much speech, so "the meeting is on...
+// Thursday" stays one line instead of two.
+const MIN_SPEECH_MS = 1_500;
+// A short answer on its own ("yes", "Luis") still ends after a long silence.
+const LONG_SILENCE_MS = 2_500;
 // Someone talking without pause still gets a line this often, instead of the
 // transcript waiting for them to breathe.
 const MAX_UTTERANCE_MS = 15_000;
@@ -55,6 +61,7 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
     let closing = false;
     let awaiting = 0;
     let heardSpeech = false;
+    let speechMs = 0;
     let silenceMs = 0;
     let utteranceMs = 0;
 
@@ -72,6 +79,7 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
       send({ type: "input_audio_buffer.commit" });
       awaiting++;
       heardSpeech = false;
+      speechMs = 0;
       silenceMs = 0;
       utteranceMs = 0;
     };
@@ -128,12 +136,19 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
         const ms = chunk.length / BYTES_PER_MS;
         if (rms(chunk) >= SPEECH_RMS) {
           heardSpeech = true;
+          speechMs += ms;
           silenceMs = 0;
         } else if (heardSpeech) {
           silenceMs += ms;
         }
-        if (heardSpeech) utteranceMs += ms;
-        if (heardSpeech && (silenceMs >= SILENCE_TO_COMMIT_MS || utteranceMs >= MAX_UTTERANCE_MS)) commit();
+        if (!heardSpeech) return;
+        utteranceMs += ms;
+        if (
+          silenceMs >= LONG_SILENCE_MS ||
+          (silenceMs >= SILENCE_TO_COMMIT_MS && speechMs >= MIN_SPEECH_MS) ||
+          utteranceMs >= MAX_UTTERANCE_MS
+        )
+          commit();
       },
       close() {
         if (closing) return;
