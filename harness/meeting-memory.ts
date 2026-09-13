@@ -5,7 +5,9 @@ import { NoteSchema, type ExtractNotes, type MemoryHit } from "@adapters/browser
 
 export function createMeetingAnswerer(llm: LlmClient) {
   if (llm.name === "fake") return undefined;
-  const system = readFileSync(new URL("../prompts/memory/answer.v1.md", import.meta.url), "utf8");
+  // v2: the answer lands on a live-meeting overlay, so it is one short line or
+  // nothing at all, never a paragraph.
+  const system = readFileSync(new URL("../prompts/memory/answer.v2.md", import.meta.url), "utf8");
   return async (question: string, hits: MemoryHit[]) => {
     if (!hits.length) return null;
     const response = await llm.complete({
@@ -13,12 +15,14 @@ export function createMeetingAnswerer(llm: LlmClient) {
       user: JSON.stringify({ question, excerpts: hits }),
       json: true,
       promptId: "memory.answer",
-      maxTokens: 1000,
+      maxTokens: 200,
       temperature: 0,
     });
+    const raw = JSON.parse(response.text) as { answer?: unknown };
+    if (raw.answer === null || raw.answer === "") return null;
     const answer = z
-      .object({ answer: z.string().min(1).max(1800), sources: z.array(z.string()).min(1).max(8) })
-      .parse(JSON.parse(response.text));
+      .object({ answer: z.string().min(1).max(300), sources: z.array(z.string()).min(1).max(8) })
+      .parse(raw);
     if (answer.sources.some((id) => !hits.some((hit) => hit.event_id === id)))
       throw new Error("Answer returned an unknown source");
     return answer;
