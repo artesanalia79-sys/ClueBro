@@ -50,12 +50,8 @@ export interface NoteHit {
   due: string | null;
   body: string;
   evidence: MemoryNote["evidence"];
-  /** Share of the query's words found in the note's title, owner or due date. */
-  coverage: number;
 }
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 24);
-const fold = (s: string) =>
-  s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase();
 const clean = (s: string) => s.replace(/([\\`*_{}\[\]<>#|])/g, "\\$1").replace(/[\r\n]+/g, " ");
 const words = (s: string) => [...new Set(s.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
 const STOP = new Set(
@@ -230,8 +226,6 @@ export class MeetingMemory {
       );
     return rows.map((row) => {
       const note = JSON.parse(String(row.payload)) as MemoryNote;
-      const heading = fold([note.title, note.owner ?? "", note.due ?? ""].join(" "));
-      const covered = tokens.filter((token) => heading.includes(fold(token))).length;
       return {
         note_id: String(row.note_id),
         meeting_id: String(row.meeting_id),
@@ -243,7 +237,6 @@ export class MeetingMemory {
         due: note.due,
         body: note.body,
         evidence: note.evidence,
-        coverage: covered / tokens.length,
       };
     });
   }

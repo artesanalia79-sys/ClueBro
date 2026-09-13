@@ -83,9 +83,12 @@ The default directory is excluded from Git; exclude a custom directory yourself.
   are shown. Citation validation does not prove every interpretation is correct.
 - Every stored line triggers a lookup in the other meetings of the same project,
   and the answer is pushed to the panel as soon as it exists, through a long
-  poll, rather than on a timer. Organized notes are searched first; one whose
-  heading covers the latest line is shown directly, without a model call. The
-  panel shows at most one short answer at a time. A new answer waits until the current one has been on screen
+  poll, rather than on a timer. The latest line is searched first and the two
+  before it only fill the remaining slots, so an earlier topic cannot crowd out
+  the current one; notes lead captions within each. Only the latest line is
+  answered, in the meeting language (`TRANSCRIBE_LANGUAGES`), with the lines
+  before it as context. The panel shows
+  at most one short answer at a time. A new answer waits until the current one has been on screen
   for 12 seconds; the same answer is never shown twice, and the source is folded
   under it. When the model finds nothing relevant, nothing is shown.
 - Closing commits immediately and starts background organization. Extraction

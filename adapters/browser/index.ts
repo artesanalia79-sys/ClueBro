@@ -32,8 +32,9 @@ export interface BrowserBridgeOptions {
   /** The person the agent is supporting. Suggestions go only to them. */
   principalActorId: string;
   memory: MeetingMemory;
+  /** The last lines said, oldest first; the final one is what gets answered. */
   answer?: (
-    question: string,
+    lines: string[],
     hits: MemoryHit[],
   ) => Promise<{ answer: string; sources: string[] } | null>;
   /** Turns meeting audio into lines. Absent means captions come from Meet. */
@@ -158,8 +159,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
   };
 
   // Earlier-meeting context for what is being said now. Organized notes come
-  // first: they carry the decision, owner and date cleanly, and one whose
-  // heading covers the latest line is shown without a model call at all.
+  // first among the excerpts: they carry the decision, owner and date cleanly.
   const contextFor = async (meetingId: string) => {
     const meeting = options.memory.get(meetingId);
     const lines = options.memory
@@ -168,41 +168,39 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       .map((e) => e.text);
     const recent = lines.join(" ");
     const latest = lines.at(-1) ?? "";
-    const notes = options.memory.searchNotes(meeting.project, recent, meetingId);
-    const captions = options.memory.search(meeting.project, recent, meetingId);
-    const noteExcerpts: MemoryHit[] = notes.map((note) => ({
+    // The latest line is searched first, and the lines before it only fill
+    // the rest. Searched as one blob, an earlier topic filled every slot: a
+    // question about the AI provider came back with nothing but spike notes.
+    const asExcerpt = (note: ReturnType<typeof options.memory.searchNotes>[number]): MemoryHit => ({
       event_id: note.evidence[0]!.event_id,
       meeting_id: note.meeting_id,
       label: note.label,
       occurred_at: note.started_at,
       speaker: note.owner ?? note.kind,
       text: `${note.kind}: ${note.title}. ${note.body}`,
-    }));
-    const hits = [
-      ...new Map([...noteExcerpts, ...captions].map((hit) => [hit.event_id, hit])).values(),
-    ].slice(0, 8);
+    });
+    const candidates = [
+      ...options.memory.searchNotes(meeting.project, latest, meetingId).map(asExcerpt),
+      ...options.memory.search(meeting.project, latest, meetingId),
+      ...options.memory.searchNotes(meeting.project, recent, meetingId).map(asExcerpt),
+      ...options.memory.search(meeting.project, recent, meetingId),
+    ];
+    // A note's evidence is often one of the caption hits too. The first entry
+    // for an id wins, so the note stays and the raw caption behind it does not
+    // replace it: a Map keyed by id kept the note's place but the caption's text.
+    const seen = new Set<string>();
+    const hits = candidates
+      .filter((hit) => !seen.has(hit.event_id) && Boolean(seen.add(hit.event_id)))
+      .slice(0, 8);
     if (hits.length === 0) return { hits, context: null };
     const key = `${latest}|${hits.map((hit) => hit.event_id).join(",")}`;
     const cached = contextAnswers.get(meetingId);
     if (cached?.key === key) return { hits, context: await cached.answer };
     const answer = (async (): Promise<ContextAnswer> => {
-      const direct = options.memory.searchNotes(meeting.project, latest, meetingId)[0];
-      if (direct && direct.kind !== "question" && direct.coverage >= 0.5) {
-        const detail = [direct.owner, direct.due].filter(Boolean).join(" · ");
-        return {
-          synthesis: {
-            answer: detail ? `${direct.title} (${detail})` : direct.title,
-            sources: [direct.evidence[0]!.event_id],
-          },
-          quote: direct.evidence[0]?.quote ?? null,
-          source: `${direct.label} · ${new Date(direct.started_at).toLocaleDateString()}`,
-        };
-      }
-      const synthesis =
-        (await options.answer?.(
-          `This is being discussed right now: "${recent}". What in these earlier meetings is relevant to it?`,
-          hits,
-        )) ?? null;
+      // Replayed on real meetings, a note title shown as-is fired once in
+      // twelve lines and named a topic instead of the fact, while the model
+      // answered in under a second. The model reads the notes first instead.
+      const synthesis = (await options.answer?.(lines, hits)) ?? null;
       const cited = synthesis ? hits.find((hit) => synthesis.sources.includes(hit.event_id)) : undefined;
       return {
         synthesis,
@@ -251,8 +249,13 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
               pushed.set(meetingId, text);
               pushFrame(meetingId, { kind: "context", body: text, quote: context.quote, source: context.source });
             }
-          } catch {
-            // A failed lookup leaves the panel as it was; the next line retries.
+          } catch (error) {
+            // The panel stays as it was and the next line retries, but the
+            // failure is said out loud: swallowed, it looked exactly like
+            // "nothing relevant" and hid a bug that dropped every answer.
+            console.log(
+              `  context: lookup failed (meeting ${meetingId.slice(0, 8)}): ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         } while (run.again && !stopped);
       } finally {
@@ -372,7 +375,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       const project = z.string().trim().min(1).max(120).parse(url.searchParams.get("project"));
       const hits = options.memory.search(project, query);
       try {
-        json(res, { hits, synthesis: (await options.answer?.(query, hits)) ?? null });
+        json(res, { hits, synthesis: (await options.answer?.([query], hits)) ?? null });
       } catch {
         json(res, {
           hits,

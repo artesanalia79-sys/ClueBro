@@ -73,7 +73,6 @@ try {
   await memory.finish(second.id);
   const noteHits = memory.searchNotes("launch", "delivery date");
   assert.ok(noteHits.length > 0, "organized notes are searchable, not only raw captions");
-  assert.equal(noteHits[0]!.coverage, 1, "and report how much of the query their heading covers");
   assert.ok(
     memory.searchNotes("launch", "delivery date", first.id).every((hit) => hit.meeting_id !== first.id),
     "the current meeting is left out of note search",
@@ -156,6 +155,7 @@ try {
     });
   });
   let answered = 0;
+  let lastExcerpts: { text: string }[] = [];
   bridge = createBrowserBridge({
     port,
     principalActorId: "owner-a",
@@ -165,9 +165,14 @@ try {
       append: (chunk) => onLine(`Heard ${chunk.length} bytes of audio.`),
       close: () => {},
     }),
-    answer: async (_question, hits) => {
+    answer: async (lines, hits) => {
       answered++;
-      return { answer: "Earlier: Friday launch", sources: [hits[0]!.event_id] };
+      lastExcerpts = hits;
+      const now = lines.at(-1) ?? "";
+      return {
+        answer: /delivery/i.test(now) ? "Delivery is on Friday" : "Earlier: Friday launch",
+        sources: [hits[0]!.event_id],
+      };
     },
   });
   await bridge.inbound.start!();
@@ -282,10 +287,28 @@ try {
   assert.ok(Date.now() - askedAt < 2000, "the answer arrives with the line, not on a later poll");
   assert.equal(
     pushedFrames.frames.find((frame) => frame.kind === "context")?.body,
-    "Delivery date",
-    "an organized note that covers the line is used directly",
+    "Delivery is on Friday",
+    "the pushed answer is about the latest line",
   );
-  assert.equal(answered, 1, "and answering from a note spends no model call");
+  assert.ok(
+    lastExcerpts[0]?.text.startsWith("decision: Delivery date"),
+    "organized notes lead the excerpts the answer is drawn from",
+  );
+
+  // The latest line is searched first. The line before it shares three words
+  // with the Friday note and the question shares one with the Tuesday note, so
+  // searched as one blob, Friday would take the first slot.
+  for (const [caption_id, text] of [
+    ["old-topic", "Entregar el lanzamiento el viernes, entregar el viernes."],
+    ["new-topic", "¿Martes?"],
+  ])
+    assert.equal((await post("/captions", { meeting_id: session.id, caption_id, text })).status, 202);
+  const ordered = (await (await fetch(contextUrl)).json()) as { hits: { text: string }[] };
+  assert.match(
+    ordered.hits[0]?.text ?? "",
+    /martes/i,
+    "what is asked now leads the excerpts, not the topic of the line before it",
+  );
 
   // Audio from the microphone becomes a caption attributed to the principal,
   // through the same path a typed caption takes.

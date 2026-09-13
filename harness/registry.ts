@@ -87,7 +87,11 @@ async function buildAdapters(
           config.browser.principalActorId ?? "principal",
           createMeetingExtractor(llm),
         ),
-        answer: createMeetingAnswerer(llm),
+        // The meeting language, not the language of whichever note or loanword
+        // the model happens to read first.
+        answer: createMeetingAnswerer(llm, {
+          language: config.browser.transcription.languages[0] ?? "es",
+        }),
         ...(config.browser.transcription.apiKey
           ? {
               transcribe: (await import("./stt/openai-realtime")).createOpenAiTranscription(
