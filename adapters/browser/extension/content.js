@@ -1,4 +1,6 @@
-/* Captions are opt-in, saved before upload, and scoped to an explicit session. */
+/* Captions follow the call: the session opens when you join and closes when
+   you leave. Saved locally before upload, announced in a visible panel, and
+   stoppable at any time -- known support, not a hidden recorder. */
 (() => {
   if (document.getElementById("cluebro-panel")) return;
   const ROOM = location.pathname.replace(/^\//, "") || "unknown-meeting";
@@ -9,31 +11,62 @@
     '[role="region"][aria-label*="caption" i]',
     '[role="region"][aria-label*="subtítulo" i]',
   ];
+  // Meet renders icon ligatures, scroll buttons and the speaker's own label
+  // inside the caption region. They reach the transcript as if they were
+  // speech, and then the extractor treats them as things people said.
+  const NOISE =
+    /^(arrow_downward|expand_more|keyboard_arrow\w*|more_vert|Ir al final|Jump to bottom|Tú|You)$/i;
+  // These exist once you are actually in the call, not in the lobby and not
+  // after you leave, which is what makes them the signal for when a meeting
+  // starts and ends. The data attributes come first because they do not
+  // change with the interface language; the hang-up labels are the fallback
+  // for a layout where the tiles are not rendered.
+  const IN_CALL = [
+    "[data-participant-id]",
+    "[data-self-name]",
+    "[data-meeting-code]",
+    '[aria-label*="Leave call" i]',
+    '[aria-label*="Salir de la llamada" i]',
+    '[aria-label*="Abandonar la llamada" i]',
+    '[aria-label*="Finalizar llamada" i]',
+    '[aria-label*="End call" i]',
+  ];
+  const captionsVisible = () => {
+    const container = SELECTORS.map((s) => document.querySelector(s)).find(Boolean);
+    return Boolean(container && (container.textContent ?? "").trim().length > 2);
+  };
+  // Captions only ever render during a call, so text in that region is proof
+  // of one no matter what the interface language calls the hang-up button.
+  const inCall = () => IN_CALL.some((s) => document.querySelector(s)) || captionsVisible();
   let meeting = null,
     recording = false,
     pending = [],
-    stream,
+    listening = null,
+    awaitingFrames = false,
     draining = false,
     working = false;
   let saving = Promise.resolve(),
     drainTask = Promise.resolve(),
     candidates = new Map(),
-    lastContext = "",
-    lastContextAt = 0;
+    wasInCall = false,
+    audioActive = false,
+    audioAvailable = false,
+    lastInsightAt = 0,
+    queuedInsight = null,
+    shownAnswers = [];
   const panel = document.createElement("aside");
   panel.id = "cluebro-panel";
   panel.setAttribute("aria-label", "ClueBro meeting memory");
   panel.innerHTML = `
-    <header><div><span class="eyebrow">MEETING MEMORY</span><strong>ClueBro</strong></div><button class="collapse" type="button" aria-label="Minimize panel" aria-expanded="true">−</button></header>
+    <header><span class="brand"><span class="dot" aria-hidden="true"></span>ClueBro</span><p class="state" role="status" aria-live="polite">Ready</p><button class="collapse" type="button" aria-label="Minimize panel" aria-expanded="true">−</button></header>
     <div class="panel-content">
-      <p class="state" role="status" aria-live="polite">Ready when you are.</p>
-      <label class="project-label">Project<input class="project" maxlength="120" placeholder="e.g. Product launch" /></label>
-      <p class="hint">Start saving to keep captions locally. Use the same project to connect meetings. Turn on Meet captions.</p>
-      <div class="actions"><button class="start primary" type="button">Start saving</button><button class="finish" type="button" disabled>Finish & organize</button></div>
-      <nav aria-label="Memory views"><button class="view active" data-view="context" type="button">Context</button><button class="view" data-view="history" type="button">History</button></nav>
-      <section class="context-view"><form class="search"><label class="sr-only" for="cluebro-query">Search project memory</label><input id="cluebro-query" maxlength="1000" placeholder="What did we agree about delivery?" required /><button type="submit" aria-label="Search memory">↗</button></form><div class="memory-results"><p class="empty">Your previous meetings will appear here as the conversation develops.</p></div><div class="cards"></div></section>
-      <section class="history-view" hidden><button class="refresh" type="button">Refresh meetings</button><div class="meetings"></div></section>
-      <footer>Local memory · Sources included</footer>
+      <section class="insights" aria-live="polite"><p class="empty">Listening. Context from earlier meetings shows up here.</p></section>
+      <details class="more"><summary>Project &amp; history</summary>
+        <label class="project-label">Project<input class="project" maxlength="120" placeholder="e.g. Product launch" /></label>
+        <p class="hint">Saving follows the call. Use the same project name to connect meetings.</p>
+        <button class="refresh" type="button">Refresh meetings</button>
+        <div class="meetings"></div>
+      </details>
     </div>`;
   document.body.appendChild(panel);
   const el = (selector) => panel.querySelector(selector);
@@ -41,18 +74,46 @@
     el(".state").textContent = text;
   };
   const project = () => el(".project").value.trim();
-  try {
-    el(".project").value = sessionStorage.getItem(`cluebro-project:${ROOM}`) || ROOM;
-  } catch {
-    el(".project").value = ROOM;
-  }
+  // One project for every meeting until someone names another, remembered
+  // across Meet links. Defaulting to the link made every link its own project,
+  // so no meeting could ever draw context from a previous one.
+  const DEFAULT_PROJECT = "general";
+  const PROJECT_KEY = "cluebro-project";
+  el(".project").value = DEFAULT_PROJECT;
+  const projectReady = chrome.storage.local
+    .get(PROJECT_KEY)
+    .then((stored) => {
+      const saved = stored?.[PROJECT_KEY];
+      if (typeof saved === "string" && saved.trim()) el(".project").value = saved;
+    })
+    .catch(() => {});
+  const saveProject = () => {
+    if (project()) void chrome.storage.local.set({ [PROJECT_KEY]: project() }).catch(() => {});
+  };
+  el(".project").addEventListener("change", saveProject);
 
+  // Reloading the extension leaves this page running the previous content
+  // script, whose channel to it is already gone. Nothing recovers without a
+  // reload, so the panel has to say that rather than repeat the platform's
+  // wording, which reads like a crash.
+  const STALE = "ClueBro was updated. Reload this tab to keep saving.";
+  const TOOLBAR_PROMPT = "Saving · click C in the toolbar to transcribe";
+  // Read during a live conversation: few lines, and none replaced before it
+  // could be read.
+  const MAX_INSIGHTS = 3;
+  const HOLD_MS = 12_000;
   async function request(path, body) {
-    const response = await chrome.runtime.sendMessage({
-      type: "cluebro-request",
-      path,
-      ...(body === undefined ? {} : { body }),
-    });
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({
+        type: "cluebro-request",
+        path,
+        ...(body === undefined ? {} : { body }),
+      });
+    } catch (error) {
+      throw new Error(/context invalidated/i.test(error?.message ?? "") ? STALE : error.message);
+    }
+    if (!response) throw new Error(STALE);
     if (response.error) throw new Error(response.error);
     if (response.status >= 400) {
       let failure = {};
@@ -65,16 +126,12 @@
     return response.text ? JSON.parse(response.text) : null;
   }
   function controls() {
-    el(".start").disabled = working || recording || pending.length > 0;
-    el(".start").textContent = meeting && !meeting.ended_at ? "Resume saving" : "Start saving";
-    el(".finish").disabled = working || !meeting;
-    el(".finish").textContent = meeting?.ended_at ? "Retry organizing" : "Finish & organize";
     el(".project").disabled =
       recording || working || pending.length > 0 || Boolean(meeting && !meeting.ended_at);
   }
   function remember() {
     if (meeting) sessionStorage.setItem(SESSION_KEY, JSON.stringify(meeting));
-    sessionStorage.setItem(`cluebro-project:${ROOM}`, project());
+    saveProject();
   }
   function persistQueue() {
     const key = `cluebro-pending:${meeting.id}`,
@@ -94,7 +151,7 @@
           pending.shift();
           await persistQueue();
         }
-        status(recording ? "Saving captions locally." : "All captured captions saved.");
+        status(recording ? "Saving" : "All captions saved");
       } catch (error) {
         status(`Pending: ${pending.length} caption(s). ${error.message}. Retrying automatically.`);
       } finally {
@@ -136,14 +193,17 @@
     if (text) void enqueue(text, candidate.speaker);
   }
   function scan() {
-    if (!recording) return;
+    // Meet's captions are the fallback, never a second source: with OpenAI
+    // transcription configured they are worse than the audio, and while the
+    // audio is recorded they would store every sentence twice.
+    if (!recording || audioActive || audioAvailable) return;
     const container = SELECTORS.map((s) => document.querySelector(s)).find(Boolean),
       now = Date.now();
     if (container) {
       for (const node of container.querySelectorAll("div, span")) {
         if (node.querySelector("div, span") || node.closest("#cluebro-panel")) continue;
         const text = node.textContent?.trim();
-        if (!text || text.length < 2) continue;
+        if (!text || text.length < 2 || NOISE.test(text)) continue;
         const speaker = node.closest("[data-sender-name]")?.dataset.senderName || "Unknown speaker";
         if (text === speaker) continue;
         const previous = candidates.get(node);
@@ -160,42 +220,53 @@
       if (!node.isConnected) candidates.delete(node);
     }
   }
-  function showHits(hits, automatic = false, synthesis = null, warning = null) {
-    const target = el(".memory-results");
-    target.replaceChildren();
-    const caption = document.createElement("p");
-    caption.className = "result-label";
-    caption.textContent = automatic ? "RELATED FROM EARLIER MEETINGS" : "MATCHING SOURCES";
-    target.append(caption);
-    if (synthesis || warning) {
-      const answer = document.createElement("p");
-      answer.className = "memory-hit";
-      answer.textContent = synthesis ? synthesis.answer : warning;
-      target.append(answer);
+  // The answer is the whole point; where it came from is one tap away.
+  function renderInsight(item) {
+    shownAnswers = [item.answer.trim().toLowerCase(), ...shownAnswers].slice(0, 20);
+    lastInsightAt = Date.now();
+    queuedInsight = null;
+    const list = el(".insights");
+    list.querySelector(".empty")?.remove();
+    const card = document.createElement("article");
+    card.className = "insight";
+    const answer = document.createElement("p");
+    answer.className = "answer";
+    answer.textContent = item.answer.trim();
+    card.append(answer);
+    if (item.quote || item.source) {
+      const why = document.createElement("details");
+      why.className = "why";
+      const summary = document.createElement("summary");
+      summary.textContent = "Source";
+      why.append(summary);
+      if (item.quote) {
+        const quote = document.createElement("p");
+        quote.className = "quote";
+        quote.textContent = item.quote;
+        why.append(quote);
+      }
+      if (item.source) {
+        const source = document.createElement("p");
+        source.className = "source";
+        source.textContent = item.source;
+        why.append(source);
+      }
+      card.append(why);
     }
-    if (!hits.length) {
-      const empty = document.createElement("p");
-      empty.className = "empty";
-      empty.textContent = "No matching sources in this project. Try a person, topic or decision.";
-      target.append(empty);
+    list.prepend(card);
+    const cards = list.querySelectorAll(".insight");
+    for (let i = MAX_INSIGHTS; i < cards.length; i++) cards[i].remove();
+  }
+  function addInsight(item) {
+    const text = (item.answer ?? "").trim();
+    if (!text || shownAnswers.includes(text.toLowerCase())) return;
+    // A newer line waits instead of pushing away the one someone is reading;
+    // only the latest waiting line is kept, since older ones are stale.
+    if (Date.now() - lastInsightAt < HOLD_MS) {
+      queuedInsight = item;
+      return;
     }
-    for (const hit of hits) {
-      const item = document.createElement("article");
-      item.className = "memory-hit";
-      const quote = document.createElement("p");
-      quote.textContent = hit.text;
-      const source = document.createElement("p");
-      source.className = "source";
-      source.textContent = `${hit.speaker} · ${hit.label} · ${new Date(hit.occurred_at).toLocaleString()}`;
-      if (synthesis?.sources.includes(hit.event_id))
-        source.textContent = `Cited in answer · ${source.textContent}`;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = "Download source";
-      button.onclick = () => void download(hit.meeting_id).catch((error) => status(error.message));
-      item.append(quote, source, button);
-      target.append(item);
-    }
+    renderInsight(item);
   }
   async function download(id) {
     const markdown = await request(`/meetings/${id}/export`);
@@ -221,7 +292,7 @@
       title.textContent = row.label;
       const detail = document.createElement("p");
       detail.className = "source";
-      detail.textContent = `${new Date(row.started_at).toLocaleString()} · ${row.event_count} captions · ${row.processing ? "Organizing…" : row.processing_error ? "Organization failed — retry" : row.ended_at ? (row.extraction_enabled ? `${row.processed_count}/${row.event_count} processed` : "Transcript only") : "Open"}`;
+      detail.textContent = `${new Date(row.started_at).toLocaleString()} · ${row.event_count} captions · ${row.processing ? "Organizing…" : row.processing_error ? `Organization failed: ${row.processing_error}` : row.ended_at ? (row.extraction_enabled ? `${row.processed_count}/${row.event_count} processed` : "Transcript only") : "Open"}`;
       const exportButton = document.createElement("button");
       exportButton.type = "button";
       exportButton.textContent = "Download .md";
@@ -260,7 +331,7 @@
             remember();
             controls();
             void drain();
-            status("Session restored. Resume saving or finish organizing.");
+            status("Session restored");
           } catch (error) {
             status(error.message);
           }
@@ -270,34 +341,41 @@
     }
   }
   function connect() {
-    if (stream) clearInterval(stream);
-    const id = meeting.id;
-    const poll = async () => {
-      try {
-        const result = await request(`/suggestions?meeting_id=${id}&poll=1`);
-        for (const card of result.frames) {
-          const item = document.createElement("article");
-          item.className = "card";
-          const body = document.createElement("p");
-          body.textContent = card.body;
-          const source = document.createElement("p");
-          source.className = "source";
-          source.textContent = (card.sources || []).map((s) => `${s.label} (${s.ref})`).join(" · ");
-          item.append(body, source);
-          el(".cards").prepend(item);
-          while (el(".cards").children.length > 8) el(".cards").lastChild.remove();
-        }
-      } catch {
-        /* Keep the panel usable if a frame is malformed. */
-      }
-    };
-    void poll();
-    stream = setInterval(poll, 3000);
+    listening = meeting.id;
   }
-  el(".start").onclick = async () => {
+  // One request at a time, held open by the bridge until something arrives,
+  // and a new one on the next tick. Answers show up as soon as they exist
+  // instead of waiting for a timer.
+  function listen() {
+    if (!listening || !recording || awaitingFrames) return;
+    const id = listening;
+    awaitingFrames = true;
+    void request(`/suggestions?meeting_id=${id}&poll=1&wait=1`)
+      .then((result) => {
+        for (const card of result.frames) {
+          if (card.kind === "context")
+            addInsight({ answer: card.body, quote: card.quote ?? null, source: card.source ?? null });
+          else
+            addInsight({
+              answer: card.body,
+              quote: null,
+              source: (card.sources || []).map((s) => `${s.label} (${s.ref})`).join(" · ") || null,
+            });
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        awaitingFrames = false;
+      });
+  }
+  async function startSaving(automatic = false) {
+    // A session created before the remembered project loads would land in
+    // the default project and be cut off from its own history.
+    await projectReady;
     if (!project()) {
+      el(".more").open = true;
       el(".project").focus();
-      status("Enter a project to connect your meetings.");
+      status("Set a project to start saving");
       return;
     }
     working = true;
@@ -312,38 +390,37 @@
         });
         pending = [];
         candidates = new Map();
-        lastContext = "";
       }
       recording = true;
       remember();
       connect();
-      status("Saving captions locally. Turn on Meet captions.");
+      // Nobody pressed a button, so the status line is what tells people the
+      // call is being saved: support they can see, not a hidden recorder.
+      status(audioAvailable ? TOOLBAR_PROMPT : "Saving · turn on Meet captions");
     } catch (error) {
       status(error.message);
     } finally {
       working = false;
       controls();
     }
-  };
-  el(".finish").onclick = async () => {
+  }
+  async function finishMeeting() {
+    if (!meeting || working) return;
     scan();
     working = true;
     recording = false;
+    endAudioCapture();
     for (const candidate of candidates.values()) flushCandidate(candidate);
     controls();
     try {
       await saving;
       await drain();
       if (pending.length) throw new Error("Wait for pending captions to upload before finishing.");
-      status("Transcript saved. Organizing notes…");
+      status("Meeting saved · organizing notes");
       meeting = await request(`/meetings/${meeting.id}/finish`, {});
       remember();
-      clearInterval(stream);
-      status(
-        meeting.extraction_enabled
-          ? "Transcript saved. Organizing in the background; check History for progress."
-          : "Transcript saved and searchable. AI organization is unavailable.",
-      );
+      listening = null;
+      status(meeting.extraction_enabled ? "Meeting saved · organizing notes" : "Meeting saved");
       await history();
     } catch (error) {
       if (meeting) {
@@ -352,38 +429,59 @@
           remember();
         } catch {}
       }
-      status(`Your captured captions are retained. ${error.message}`);
+      status(`Captions kept · ${error.message}`);
     } finally {
       working = false;
       controls();
     }
-  };
-  el(".search").onsubmit = async (event) => {
-    event.preventDefault();
-    const button = el(".search button");
-    button.disabled = true;
+  }
+  function endAudioCapture() {
+    if (!audioActive) return;
+    audioActive = false;
+    // Nothing may be listening, and a stale content script throws before it
+    // returns a promise at all; neither should surface as a page error.
     try {
-      const result = await request(
-        `/memory/search?project=${encodeURIComponent(project())}&q=${encodeURIComponent(el("#cluebro-query").value)}`,
-      );
-      showHits(result.hits, false, result.synthesis, result.warning);
-    } catch (error) {
-      status(error.message);
-    } finally {
-      button.disabled = false;
+      void chrome.runtime.sendMessage({ type: "cluebro-capture-end" }).catch(() => {});
+    } catch {}
+  }
+  // Chrome only lets the extension record a tab from its toolbar button, so
+  // the background asks this panel which session the audio belongs to.
+  chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (sender.id !== chrome.runtime.id) return false;
+    if (message?.type === "cluebro-capture-begin") {
+      void (async () => {
+        if (!recording) await startSaving(false);
+        if (!recording || !meeting) {
+          reply({ error: "Enter a project in the panel, then click the ClueBro button again." });
+          return;
+        }
+        audioActive = true;
+        candidates = new Map();
+        status("Transcribing the call's audio");
+        reply({ meeting_id: meeting.id });
+      })();
+      return true;
     }
-  };
+    if (message?.type === "cluebro-capture-status") {
+      if (message.state === "stopped") {
+        audioActive = false;
+        status(audioAvailable ? "Transcription stopped · click C to resume" : "Audio stopped · using Meet captions");
+      } else if (message.state === "mic-denied") {
+        status("Microphone blocked · only others are transcribed");
+      } else if (message.state === "mic-error") {
+        status("Microphone unavailable · only others are transcribed");
+      } else if (message.state === "error") {
+        audioActive = false;
+        status(audioAvailable ? `Audio failed · ${message.detail}` : "Audio failed · using Meet captions");
+      }
+      return false;
+    }
+    return false;
+  });
   el(".refresh").onclick = () => void history().catch((error) => status(error.message));
-  panel.querySelectorAll(".view").forEach(
-    (button) =>
-      (button.onclick = () => {
-        panel.querySelectorAll(".view").forEach((b) => b.classList.toggle("active", b === button));
-        el(".context-view").hidden = button.dataset.view !== "context";
-        el(".history-view").hidden = button.dataset.view !== "history";
-        if (button.dataset.view === "history")
-          void history().catch((error) => status(error.message));
-      }),
-  );
+  el(".more").addEventListener("toggle", () => {
+    if (el(".more").open) void history().catch((error) => status(error.message));
+  });
   el(".collapse").onclick = () => {
     const hidden = !el(".panel-content").hidden;
     el(".panel-content").hidden = hidden;
@@ -391,23 +489,55 @@
     el(".collapse").setAttribute("aria-expanded", String(!hidden));
     el(".collapse").setAttribute("aria-label", hidden ? "Expand panel" : "Minimize panel");
   };
+  // Joining and leaving a call are the real start and end of a meeting.
+  // Waiting for someone to remember two buttons loses the transcript of
+  // every call where they forget the second one.
+  setInterval(() => {
+    const now = inCall();
+    if (now && !wasInCall) {
+      if (!recording && !working) void startSaving(true);
+    } else if (!now && wasInCall) {
+      if (recording) void finishMeeting();
+    }
+    wasInCall = now;
+  }, 2000);
+
+  // A tab closed mid-call never reaches the watcher above. The background
+  // worker outlives this page, so handing the request over there is what
+  // makes the transcript survive.
+  addEventListener("pagehide", () => {
+    endAudioCapture();
+    if (!recording || !meeting) return;
+    recording = false;
+    try {
+      chrome.runtime.sendMessage({
+        type: "cluebro-request",
+        path: `/meetings/${meeting.id}/finish`,
+        body: {},
+      });
+    } catch {}
+  });
+
+  // Where text comes from is the bridge's decision, not the page's: ask once.
+  void request("/health")
+    .then((health) => {
+      audioAvailable = Boolean(health?.audio);
+      if (!audioAvailable) return;
+      el(".hint").textContent =
+        "Saving follows the call. Click C in the toolbar once per call to transcribe its audio. Use the same project name to connect meetings.";
+      if (recording && !audioActive) status(TOOLBAR_PROMPT);
+    })
+    .catch(() => {});
+
   setInterval(scan, 500);
   setInterval(() => {
     void drain();
-    if (!recording || Date.now() - lastContextAt < 15000 || el("#cluebro-query").value) return;
-    lastContextAt = Date.now();
-    void request(`/meetings/${meeting.id}/context`)
-      .then((result) => {
-        const key = result.hits.map((h) => h.event_id).join(",");
-        if (key && key !== lastContext) {
-          lastContext = key;
-          showHits(result.hits, true);
-        }
-      })
-      .catch(() => {});
-  }, 3000);
+    if (queuedInsight && Date.now() - lastInsightAt >= HOLD_MS) renderInsight(queuedInsight);
+    listen();
+  }, 1000);
   void (async () => {
     try {
+      await projectReady;
       const stored = sessionStorage.getItem(SESSION_KEY);
       if (stored) {
         meeting = JSON.parse(stored);
@@ -415,11 +545,7 @@
         const key = `cluebro-pending:${meeting.id}`;
         pending = (await chrome.storage.local.get(key))[key] || [];
         meeting = await request(`/meetings/${meeting.id}`);
-        status(
-          meeting.ended_at
-            ? "Previous meeting saved. Start a new session when ready."
-            : "Previous session restored. Resume saving when ready.",
-        );
+        status(meeting.ended_at ? "Previous meeting saved" : "Session restored");
         void drain();
       }
     } catch (error) {

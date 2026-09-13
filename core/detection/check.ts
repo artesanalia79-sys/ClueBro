@@ -8,6 +8,7 @@
  * and may change, and these rules must not change with it.
  */
 import type { ContextEvent } from "@contracts";
+import { prefilter } from "./heuristics";
 import { applyTiming, ONE_REPLY_MAX_CONFIDENCE } from "./timing";
 import { check, checkEqual, report } from "../../scripts/expect";
 
@@ -145,6 +146,42 @@ const say = (actor: string, text: string, isAgent = false): ContextEvent => {
 {
   const t = applyTiming("no_signal", 0.2, null, [say("ana", "morning all")]);
   check("no_signal passes through untouched", t.kind === "no_signal" && t.confidence === 0.2 && t.note === null);
+}
+
+// --- Spanish --------------------------------------------------------------
+// The surfaces this runs on are not English-only, and a rule that reads one
+// language is a rule that stays silent in the other.
+
+{
+  const hits = prefilter([say("ana", "No encuentro el runbook de despliegue.")]);
+  checkEqual("a search for a fact in Spanish is seen", hits[0]?.kind, "information_gap");
+}
+
+{
+  const hits = prefilter([say("ana", "Alguien tiene el link del documento de ayer?")]);
+  checkEqual("asking the room for a link in Spanish is seen", hits[0]?.kind, "information_gap");
+}
+
+{
+  const hits = prefilter([say("ana", "Deberiamos revisar el rollback en algun momento.")]);
+  checkEqual("a Spanish plan with no owner is seen", hits[0]?.kind, "plan_without_owner");
+}
+
+{
+  const hits = prefilter([say("ana", "Deberiamos revisar el rollback, yo me encargo el jueves.")]);
+  checkEqual(
+    "a Spanish plan that names an owner and a day is left alone",
+    hits.length,
+    0,
+  );
+}
+
+{
+  const hits = prefilter([say("ana", "Bueno equipo, entonces quedamos el jueves a las diez.")]);
+  check(
+    "an opener that also works as filler does not swallow the sentence",
+    hits.every((hit) => hit.quote.includes("jueves")) || hits.length === 0,
+  );
 }
 
 report("core/detection timing");

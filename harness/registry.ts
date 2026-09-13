@@ -90,9 +90,25 @@ async function buildAdapters(
           config.browser.principalActorId ?? "principal",
           createMeetingExtractor(llm),
         ),
-        answer: createMeetingAnswerer(llm),
+        // The meeting language, not the language of whichever note or loanword
+        // the model happens to read first.
+        answer: createMeetingAnswerer(llm, {
+          language: config.browser.transcription.languages[0] ?? "es",
+        }),
+        ...(config.browser.transcription.apiKey
+          ? {
+              transcribe: (await import("./stt/openai-realtime")).createOpenAiTranscription(
+                config.browser.transcription,
+              ),
+            }
+          : {}),
       });
-      log.info("adapter: browser bridge (stage 2)", { port: config.browser.port });
+      log.info("adapter: browser bridge (stage 2)", {
+        port: config.browser.port,
+        audio: config.browser.transcription.apiKey
+          ? `${config.browser.transcription.model} (${config.browser.transcription.languages.join(",")})`
+          : "off, using Meet captions",
+      });
       return {
         inbound: bridge.inbound,
         outbound: config.dryRun ? createConsoleOutbound("browser-dry-run") : bridge.outbound,

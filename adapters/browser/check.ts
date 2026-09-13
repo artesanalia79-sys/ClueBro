@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { createServer } from "node:net";
+import WebSocket from "ws";
 import { ActionDecisionSchema, ContextEventSchema, type ContextEvent } from "@contracts";
 import { MeetingMemory, type ExtractNotes } from "./memory";
 import { createBrowserBridge } from "./index";
@@ -70,6 +71,12 @@ try {
   assert.equal(memory.append(original), false, "already committed retries are safe after close");
   memory.append(event(second.id, "two", "Cambiamos el lanzamiento al martes."));
   await memory.finish(second.id);
+  const noteHits = memory.searchNotes("launch", "delivery date");
+  assert.ok(noteHits.length > 0, "organized notes are searchable, not only raw captions");
+  assert.ok(
+    memory.searchNotes("launch", "delivery date", first.id).every((hit) => hit.meeting_id !== first.id),
+    "the current meeting is left out of note search",
+  );
   const files = readdirSync(memory.vault);
   assert.equal(
     files.filter((f) => f.startsWith("Note-")).length,
@@ -147,9 +154,34 @@ try {
       probe.close(() => resolve(port));
     });
   });
-  bridge = createBrowserBridge({ port, principalActorId: "owner-a", memory });
+  let answered = 0;
+  let lastExcerpts: { text: string }[] = [];
+  bridge = createBrowserBridge({
+    port,
+    principalActorId: "owner-a",
+    memory,
+    // Stands in for the vendor: every chunk of audio becomes one finished line.
+    transcribe: ({ onLine }) => ({
+      append: (chunk) => onLine(`Heard ${chunk.length} bytes of audio.`),
+      close: () => {},
+    }),
+    answer: async (lines, hits) => {
+      answered++;
+      lastExcerpts = hits;
+      const now = lines.at(-1) ?? "";
+      return {
+        answer: /delivery/i.test(now) ? "Delivery is on Friday" : "Earlier: Friday launch",
+        sources: [hits[0]!.event_id],
+      };
+    },
+  });
   await bridge.inbound.start!();
   const base = `http://127.0.0.1:${port}`;
+  assert.equal(
+    ((await (await fetch(`${base}/health`)).json()) as { audio?: boolean }).audio,
+    true,
+    "the panel is told a transcriber is configured, so it does not read Meet captions",
+  );
   const post = (path: string, body: unknown, origin?: string) =>
     fetch(base + path, {
       method: "POST",
@@ -205,9 +237,114 @@ try {
     await (await fetch(`${base}/meetings/${session.id}/export`)).text(),
     /durable caption/,
   );
+  // The panel polls this while people talk, so it must answer on its own and
+  // must not spend a model call per poll on excerpts it already answered.
+  assert.equal(
+    (
+      await post("/captions", {
+        meeting_id: session.id,
+        caption_id: "context-trigger",
+        text: "Volvamos al lanzamiento del viernes.",
+      })
+    ).status,
+    202,
+  );
+  const contextUrl = `${base}/meetings/${session.id}/context`;
+  const context = (await (await fetch(contextUrl)).json()) as {
+    hits: unknown[];
+    synthesis: { answer: string } | null;
+  };
+  assert.ok(context.hits.length > 0, "earlier meetings in the project must be found");
+  assert.equal(
+    context.synthesis?.answer,
+    "Earlier: Friday launch",
+    "automatic context answers without anyone typing a question",
+  );
+  assert.equal(answered, 1);
+  const repeat = (await (await fetch(contextUrl)).json()) as { synthesis: { answer: string } | null };
+  assert.equal(repeat.synthesis?.answer, "Earlier: Friday launch");
+  assert.equal(answered, 1, "unchanged excerpts reuse the answer instead of asking again");
+
+  // The answer is pushed the moment a line is stored: a long poll already
+  // waiting on the bridge returns with it, instead of the panel asking later.
+  await fetch(`${base}/suggestions?meeting_id=${session.id}&poll=1`);
+  const waiting = fetch(`${base}/suggestions?meeting_id=${session.id}&poll=1&wait=1`).then(
+    (r) => r.json() as Promise<{ frames: { kind?: string; body?: string }[] }>,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const askedAt = Date.now();
+  assert.equal(
+    (
+      await post("/captions", {
+        meeting_id: session.id,
+        caption_id: "note-trigger",
+        text: "What was the delivery date again?",
+      })
+    ).status,
+    202,
+  );
+  const pushedFrames = await waiting;
+  assert.ok(Date.now() - askedAt < 2000, "the answer arrives with the line, not on a later poll");
+  assert.equal(
+    pushedFrames.frames.find((frame) => frame.kind === "context")?.body,
+    "Delivery is on Friday",
+    "the pushed answer is about the latest line",
+  );
+  assert.ok(
+    lastExcerpts[0]?.text.startsWith("decision: Delivery date"),
+    "organized notes lead the excerpts the answer is drawn from",
+  );
+
+  // The latest line is searched first. The line before it shares three words
+  // with the Friday note and the question shares one with the Tuesday note, so
+  // searched as one blob, Friday would take the first slot.
+  for (const [caption_id, text] of [
+    ["old-topic", "Entregar el lanzamiento el viernes, entregar el viernes."],
+    ["new-topic", "¿Martes?"],
+  ])
+    assert.equal((await post("/captions", { meeting_id: session.id, caption_id, text })).status, 202);
+  const ordered = (await (await fetch(contextUrl)).json()) as { hits: { text: string }[] };
+  assert.match(
+    ordered.hits[0]?.text ?? "",
+    /martes/i,
+    "what is asked now leads the excerpts, not the topic of the line before it",
+  );
+
+  // Audio from the microphone becomes a caption attributed to the principal,
+  // through the same path a typed caption takes.
+  const extension = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const before = memory.get(session.id).event_count;
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${port}/audio?meeting_id=${session.id}&speaker=self`,
+      { origin: extension },
+    );
+    socket.on("open", () => {
+      socket.send(Buffer.alloc(480), { binary: true });
+      setTimeout(() => {
+        socket.close();
+        resolve();
+      }, 100);
+    });
+    socket.on("error", reject);
+  });
+  assert.equal(memory.get(session.id).event_count, before + 1, "transcribed audio is stored as a caption");
+  const heard = memory.events(session.id).at(-1)!;
+  assert.equal(heard.text, "Heard 480 bytes of audio.");
+  assert.equal(heard.actor.display_name, "You", "the microphone stream is the principal speaking");
+
+  const refused = await new Promise<boolean>((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/audio?meeting_id=${session.id}`, {
+      origin: "https://evil.example",
+    });
+    socket.on("open", () => resolve(false));
+    socket.on("error", () => resolve(true));
+  });
+  assert.equal(refused, true, "a page that is not the extension cannot stream audio in");
+
   assert.equal((await post(`/meetings/${session.id}/finish`, {})).status, 202);
   console.log(
-    "Meeting memory: persistence, citations, retries, isolation, vault links and bridge checks passed.",
+    "Meeting memory: persistence, citations, retries, isolation, vault links, note search, pushed context and bridge checks passed.",
   );
 } finally {
   if (bridge) await bridge.inbound.stop!();

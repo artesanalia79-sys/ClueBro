@@ -360,4 +360,97 @@ console.log("\nobservability: the silences are counted separately");
   );
 }
 
+// --- model provider failures ------------------------------------------------
+// A rate limit used to surface as "notes: Required": the client turns a failed
+// call into {"error": ...}, and memory parsed that as if it were notes.
+
+{
+  const { createMeetingExtractor, createMeetingAnswerer } = await import("./meeting-memory");
+  const limited = {
+    name: "openai",
+    model: "test",
+    complete: async () => ({
+      text: JSON.stringify({ error: "429 Rate limit exceeded: free-models-per-day" }),
+      model: "test (failed)",
+      latencyMs: 0,
+    }),
+  };
+  const extract = createMeetingExtractor(limited)!;
+  const failure = await extract([event({ text: "We ship on Friday.", at: "2026-09-12T14:00:00Z" })]).then(
+    () => "no error",
+    (error: Error) => error.message,
+  );
+  check("a provider rate limit names itself when organizing notes", /429 Rate limit/.test(failure));
+  check("instead of a schema complaint nobody can act on", !/Required/.test(failure));
+  const answer = createMeetingAnswerer(limited)!;
+  const answerFailure = await answer(["when do we ship?"], [
+    {
+      event_id: "e1",
+      meeting_id: "m1",
+      label: "Planning",
+      occurred_at: new Date().toISOString(),
+      speaker: "Ana",
+      text: "We ship on Friday.",
+    } as never,
+  ]).then(
+    () => "no error",
+    (error: Error) => error.message,
+  );
+  check("and when answering from memory", /429 Rate limit/.test(answerFailure));
+}
+
+// --- answer citations and language -----------------------------------------
+// Given raw event ids, the model cited a shortened form that matched nothing,
+// and every such answer was refused while the panel stayed empty. It now sees
+// short aliases, mapped back here, and a citation it was not given is dropped.
+
+{
+  const { createMeetingAnswerer } = await import("./meeting-memory");
+  let sent: { language?: string; now?: string; before?: string[]; excerpts?: { id: string }[] } = {};
+  const replies = [
+    { answer: "Usamos OpenAI.", sources: ["E2", "E9", "1b043d0a"] },
+    { answer: "Algo sin respaldo.", sources: ["1b043d0a-2a33"] },
+  ];
+  const scripted = {
+    name: "openai",
+    model: "test",
+    complete: async (req: { user: string }) => {
+      sent = JSON.parse(req.user);
+      return { text: JSON.stringify(replies.shift()), model: "test", latencyMs: 0 };
+    },
+  };
+  const answer = createMeetingAnswerer(scripted as never, { language: "es" })!;
+  const hits = ["browser:m1:audio-self-aaa", "browser:m2:audio-self-bbb"].map((event_id) => ({
+    event_id,
+    meeting_id: "m",
+    label: "Meet",
+    occurred_at: "2026-09-13T02:23:00Z",
+    speaker: "Ana",
+    text: "acá utilizamos OpenAI",
+  }));
+  const first = await answer(["Hablamos del spike de Santiago.", "¿Qué inteligencia artificial usamos?"], hits as never);
+  checkEqual("only the latest line is the one answered", sent.now, "¿Qué inteligencia artificial usamos?");
+  checkEqual(
+    "earlier lines travel apart, as context",
+    JSON.stringify(sent.before),
+    JSON.stringify(["Hablamos del spike de Santiago."]),
+  );
+  checkEqual("the meeting language travels with every question", sent.language, "es");
+  checkEqual(
+    "excerpts reach the model under short ids",
+    JSON.stringify(sent.excerpts?.map((e) => e.id)),
+    JSON.stringify(["E1", "E2"]),
+  );
+  checkEqual(
+    "cited aliases map back to real event ids and invented ones are dropped",
+    JSON.stringify(first?.sources),
+    JSON.stringify(["browser:m2:audio-self-bbb"]),
+  );
+  checkEqual(
+    "an answer citing nothing it was given is not shown",
+    await answer(["otra cosa"], hits as never),
+    null,
+  );
+}
+
 report("harness");

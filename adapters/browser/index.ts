@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { WebSocketServer, type RawData, type WebSocket as AudioSocket } from "ws";
 import {
   ContextEventSchema,
   makeResult,
@@ -31,11 +32,30 @@ export interface BrowserBridgeOptions {
   /** The person the agent is supporting. Suggestions go only to them. */
   principalActorId: string;
   memory: MeetingMemory;
+  /** The last lines said, oldest first; the final one is what gets answered. */
   answer?: (
-    question: string,
+    lines: string[],
     hits: MemoryHit[],
   ) => Promise<{ answer: string; sources: string[] } | null>;
+  /** Turns meeting audio into lines. Absent means captions come from Meet. */
+  transcribe?: OpenTranscription;
 }
+
+/** One audio stream in, finished lines out. The vendor lives in the harness. */
+export type OpenTranscription = (handlers: {
+  onLine(text: string): void;
+  onError(error: Error): void;
+  /** Why an utterance was cut into a line, for diagnosing broken sentences. */
+  onCommit?(info: {
+    reason: "pause" | "long-pause" | "max-length" | "hang-up";
+    utteranceMs: number;
+    speechMs: number;
+    silenceMs: number;
+    medianLevel: number;
+    quietLevel: number;
+    threshold: number;
+  }): void;
+}) => { append(pcm16: Buffer): void; close(): void };
 
 interface CaptionPayload {
   meeting_id?: string;
@@ -89,8 +109,216 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
   const queue = new AsyncQueue<ContextEvent>();
   const listeners = new Map<ServerResponse, string>();
   const polling = new Map<string, { at: number; frames: unknown[] }>();
+  type ContextAnswer = {
+    synthesis: { answer: string; sources: string[] } | null;
+    quote: string | null;
+    source: string | null;
+  };
+  // Held as a promise so a pushed lookup and a request for the same lines
+  // share one model call instead of racing to make two.
+  const contextAnswers = new Map<string, { key: string; answer: Promise<ContextAnswer> }>();
+  const waiters = new Map<string, Set<() => void>>();
+  const pushed = new Map<string, string>();
+  const runs = new Map<string, { running: boolean; again: boolean }>();
+  const LONG_POLL_MS = 20_000;
   let server: Server | null = null;
   let stopped = false;
+
+  // Typed captions and transcribed audio are the same thing to everything
+  // downstream, so both enter memory and the pipeline through here.
+  const ingest = (payload: CaptionPayload): void => {
+    const text = (payload.text ?? "").trim();
+    const meetingId = payload.meeting_id!;
+    const meeting = options.memory.get(meetingId);
+    const event = ContextEventSchema.parse({
+      schema_version: "1.0.0",
+      event_id: `browser:${meetingId}:${payload.caption_id ?? randomUUID()}`,
+      source: {
+        adapter: "browser",
+        surface_id: meetingId,
+        surface_type: "live_meeting",
+        surface_label: meeting.label,
+      },
+      actor: {
+        actor_id: payload.speaker_id ?? payload.speaker_name ?? "unknown-speaker",
+        display_name: payload.speaker_name ?? "Unknown speaker",
+        is_agent: false,
+        ...(payload.speaker_role ? { role: payload.speaker_role } : {}),
+      },
+      occurred_at: payload.occurred_at ?? new Date().toISOString(),
+      text,
+      thread_id: null,
+      reply_to_event_id: null,
+      mentions: [],
+      metadata: { caption_offset_ms: payload.offset_ms ?? null },
+    } satisfies Record<string, unknown>);
+    if (options.memory.append(event)) {
+      queue.push(event);
+      scheduleContext(meetingId);
+    }
+  };
+
+  // Earlier-meeting context for what is being said now. Organized notes come
+  // first among the excerpts: they carry the decision, owner and date cleanly.
+  const contextFor = async (meetingId: string) => {
+    const meeting = options.memory.get(meetingId);
+    const lines = options.memory
+      .events(meetingId)
+      .slice(-3)
+      .map((e) => e.text);
+    const recent = lines.join(" ");
+    const latest = lines.at(-1) ?? "";
+    // The latest line is searched first, and the lines before it only fill
+    // the rest. Searched as one blob, an earlier topic filled every slot: a
+    // question about the AI provider came back with nothing but spike notes.
+    const asExcerpt = (note: ReturnType<typeof options.memory.searchNotes>[number]): MemoryHit => ({
+      event_id: note.evidence[0]!.event_id,
+      meeting_id: note.meeting_id,
+      label: note.label,
+      occurred_at: note.started_at,
+      speaker: note.owner ?? note.kind,
+      text: `${note.kind}: ${note.title}. ${note.body}`,
+    });
+    const candidates = [
+      ...options.memory.searchNotes(meeting.project, latest, meetingId).map(asExcerpt),
+      ...options.memory.search(meeting.project, latest, meetingId),
+      ...options.memory.searchNotes(meeting.project, recent, meetingId).map(asExcerpt),
+      ...options.memory.search(meeting.project, recent, meetingId),
+    ];
+    // A note's evidence is often one of the caption hits too. The first entry
+    // for an id wins, so the note stays and the raw caption behind it does not
+    // replace it: a Map keyed by id kept the note's place but the caption's text.
+    const seen = new Set<string>();
+    const hits = candidates
+      .filter((hit) => !seen.has(hit.event_id) && Boolean(seen.add(hit.event_id)))
+      .slice(0, 8);
+    if (hits.length === 0) return { hits, context: null };
+    const key = `${latest}|${hits.map((hit) => hit.event_id).join(",")}`;
+    const cached = contextAnswers.get(meetingId);
+    if (cached?.key === key) return { hits, context: await cached.answer };
+    const answer = (async (): Promise<ContextAnswer> => {
+      // Replayed on real meetings, a note title shown as-is fired once in
+      // twelve lines and named a topic instead of the fact, while the model
+      // answered in under a second. The model reads the notes first instead.
+      const synthesis = (await options.answer?.(lines, hits)) ?? null;
+      const cited = synthesis ? hits.find((hit) => synthesis.sources.includes(hit.event_id)) : undefined;
+      return {
+        synthesis,
+        quote: cited?.text ?? null,
+        source: cited
+          ? `${cited.speaker} · ${cited.label} · ${new Date(cited.occurred_at).toLocaleDateString()}`
+          : null,
+      };
+    })();
+    contextAnswers.set(meetingId, { key, answer });
+    try {
+      return { hits, context: await answer };
+    } catch (error) {
+      if (contextAnswers.get(meetingId)?.answer === answer) contextAnswers.delete(meetingId);
+      throw error;
+    }
+  };
+
+  const pushFrame = (meetingId: string, frame: Record<string, unknown>) => {
+    const mailbox = polling.get(meetingId) ?? { at: 0, frames: [] };
+    mailbox.frames.push(frame);
+    mailbox.frames = mailbox.frames.slice(-20);
+    polling.set(meetingId, mailbox);
+    for (const wake of waiters.get(meetingId) ?? []) wake();
+  };
+
+  // Runs for every stored line. One lookup per meeting at a time, and lines
+  // that arrive meanwhile trigger exactly one more, so a burst of speech never
+  // queues a model call per sentence.
+  const scheduleContext = (meetingId: string) => {
+    const run = runs.get(meetingId) ?? { running: false, again: false };
+    runs.set(meetingId, run);
+    if (run.running) {
+      run.again = true;
+      return;
+    }
+    run.running = true;
+    void (async () => {
+      try {
+        do {
+          run.again = false;
+          try {
+            const { context } = await contextFor(meetingId);
+            const text = context?.synthesis?.answer;
+            if (text && pushed.get(meetingId) !== text) {
+              pushed.set(meetingId, text);
+              pushFrame(meetingId, { kind: "context", body: text, quote: context.quote, source: context.source });
+            }
+          } catch (error) {
+            // The panel stays as it was and the next line retries, but the
+            // failure is said out loud: swallowed, it looked exactly like
+            // "nothing relevant" and hid a bug that dropped every answer.
+            console.log(
+              `  context: lookup failed (meeting ${meetingId.slice(0, 8)}): ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        } while (run.again && !stopped);
+      } finally {
+        run.running = false;
+      }
+    })();
+  };
+
+  const audioSockets = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
+
+  // One socket per audio source. The extension opens one for the tab (the
+  // other people) and one for the microphone (the principal), which is how
+  // speaker attribution survives a transcriber that returns no speaker labels.
+  const streamAudio = (socket: AudioSocket, meetingId: string, speaker: "self" | "room") => {
+    // Audio problems happen in a browser nobody is watching, so the terminal
+    // running the bridge is the one place that has to say what the recorder did.
+    const source = speaker === "self" ? "microphone" : "tab";
+    console.log(`  audio: ${source} connected (meeting ${meetingId.slice(0, 8)})`);
+    let chunks = 0;
+    const stream = options.transcribe!({
+      onLine(text) {
+        try {
+          ingest({
+            meeting_id: meetingId,
+            text,
+            caption_id: `audio-${speaker}-${randomUUID()}`,
+            ...(speaker === "self"
+              ? { speaker_id: options.principalActorId, speaker_name: "You", speaker_role: "principal" }
+              : { speaker_id: "room", speaker_name: "Others", speaker_role: "participant" }),
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "ingest failed";
+          console.log(`  audio: ${source} line could not be stored: ${message}`);
+          socket.close(1011, message.slice(0, 120));
+        }
+      },
+      onError(error) {
+        console.log(`  audio: ${source} transcription failed: ${error.message}`);
+        socket.close(1011, error.message.slice(0, 120));
+      },
+      // Broken sentences have several possible causes that look identical in
+      // the transcript: a real pause, a quiet microphone, or noise the
+      // threshold takes for speech. This line tells them apart.
+      onCommit(info) {
+        console.log(
+          `  audio: ${source} cut (${info.reason}) after ${(info.utteranceMs / 1000).toFixed(1)}s, ` +
+            `${(info.speechMs / 1000).toFixed(1)}s above threshold, level ${info.medianLevel} ` +
+            `(quiet ${info.quietLevel}, threshold ${info.threshold})`,
+        );
+      },
+    });
+    socket.on("message", (data: RawData, isBinary: boolean) => {
+      if (!isBinary) return;
+      if (++chunks === 1) console.log(`  audio: ${source} is receiving sound`);
+      stream.append(
+        Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data),
+      );
+    });
+    socket.on("close", (code: number) => {
+      console.log(`  audio: ${source} disconnected (code ${code}) after ${chunks} chunks`);
+      stream.close();
+    });
+  };
 
   const json = (res: ServerResponse, value: unknown, status = 200) => {
     res.writeHead(status, { ...CORS, "content-type": "application/json" });
@@ -115,7 +343,15 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
 
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { ...CORS, "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, principal: options.principalActorId }));
+      // The panel reads this to decide where text comes from: with a
+      // transcriber configured, Meet's captions are never used.
+      res.end(
+        JSON.stringify({
+          ok: true,
+          principal: options.principalActorId,
+          audio: Boolean(options.transcribe),
+        }),
+      );
       return;
     }
 
@@ -139,7 +375,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       const project = z.string().trim().min(1).max(120).parse(url.searchParams.get("project"));
       const hits = options.memory.search(project, query);
       try {
-        json(res, { hits, synthesis: (await options.answer?.(query, hits)) ?? null });
+        json(res, { hits, synthesis: (await options.answer?.([query], hits)) ?? null });
       } catch {
         json(res, {
           hits,
@@ -172,12 +408,12 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         return;
       }
       if (req.method === "GET" && meetingRoute[2] === "context") {
-        const recent = options.memory
-          .events(id)
-          .slice(-3)
-          .map((e) => e.text)
-          .join(" ");
-        json(res, { hits: options.memory.search(meeting.project, recent, id) });
+        try {
+          const { hits, context } = await contextFor(id);
+          json(res, { hits, synthesis: context?.synthesis ?? null });
+        } catch {
+          json(res, { hits: [], synthesis: null, warning: "Answer unavailable." });
+        }
         return;
       }
       if (req.method === "GET" && !meetingRoute[2]) {
@@ -191,10 +427,32 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       const meetingId = z.string().uuid().parse(url.searchParams.get("meeting_id"));
       options.memory.get(meetingId);
       if (url.searchParams.get("poll") === "1") {
-        for (const [key, value] of polling) if (Date.now() - value.at > 60000) polling.delete(key);
+        for (const [key, value] of polling)
+          if (Date.now() - value.at > 60000 && !waiters.get(key)?.size) polling.delete(key);
+        const current = polling.get(meetingId);
+        // The panel can only reach the bridge through its service worker, so it
+        // cannot hold a stream open. A long poll does the same job: the request
+        // waits here until something arrives, and the answer reaches the panel
+        // the moment it exists instead of on its next poll.
+        if (url.searchParams.get("wait") === "1" && !current?.frames.length) {
+          polling.set(meetingId, { at: Date.now(), frames: current?.frames ?? [] });
+          await new Promise<void>((resolve) => {
+            const set = waiters.get(meetingId) ?? new Set<() => void>();
+            waiters.set(meetingId, set);
+            const done = () => {
+              clearTimeout(timer);
+              set.delete(done);
+              resolve();
+            };
+            const timer = setTimeout(done, LONG_POLL_MS);
+            set.add(done);
+            res.on("close", done);
+          });
+          if (res.destroyed || res.writableEnded) return;
+        }
         const mailbox = polling.get(meetingId) ?? { at: Date.now(), frames: [] };
-        json(res, { frames: mailbox.frames });
         polling.set(meetingId, { at: Date.now(), frames: [] });
+        json(res, { frames: mailbox.frames });
         return;
       }
       res.writeHead(200, {
@@ -212,38 +470,11 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
     if (req.method === "POST" && req.url === "/captions") {
       try {
         const payload: CaptionPayload = CaptionSchema.parse(JSON.parse(await readBody(req)));
-        const text = (payload.text ?? "").trim();
-        if (text.length === 0) {
+        if ((payload.text ?? "").trim().length === 0) {
           res.writeHead(204, CORS).end();
           return;
         }
-
-        const meetingId = payload.meeting_id!;
-        const meeting = options.memory.get(meetingId);
-        const event = ContextEventSchema.parse({
-          schema_version: "1.0.0",
-          event_id: `browser:${meetingId}:${payload.caption_id ?? randomUUID()}`,
-          source: {
-            adapter: "browser",
-            surface_id: meetingId,
-            surface_type: "live_meeting",
-            surface_label: meeting.label,
-          },
-          actor: {
-            actor_id: payload.speaker_id ?? payload.speaker_name ?? "unknown-speaker",
-            display_name: payload.speaker_name ?? "Unknown speaker",
-            is_agent: false,
-            ...(payload.speaker_role ? { role: payload.speaker_role } : {}),
-          },
-          occurred_at: payload.occurred_at ?? new Date().toISOString(),
-          text,
-          thread_id: null,
-          reply_to_event_id: null,
-          mentions: [],
-          metadata: { caption_offset_ms: payload.offset_ms ?? null },
-        } satisfies Record<string, unknown>);
-
-        if (options.memory.append(event)) queue.push(event);
+        ingest(payload);
         res.writeHead(202, CORS).end();
       } catch (err) {
         res.writeHead(400, { ...CORS, "content-type": "application/json" });
@@ -269,6 +500,26 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
           else res.end();
         });
       });
+      server.on("upgrade", (req, socket, head) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+        const origin = req.headers.origin;
+        const meetingId = z.string().uuid().safeParse(url.searchParams.get("meeting_id"));
+        // Same rule as the HTTP routes: a page that is not the extension
+        // must not be able to push audio into someone's meeting memory.
+        if (
+          url.pathname !== "/audio" ||
+          !options.transcribe ||
+          !meetingId.success ||
+          (origin && !/^chrome-extension:\/\/[a-p]{32}$/.test(origin))
+        ) {
+          socket.destroy();
+          return;
+        }
+        const speaker = url.searchParams.get("speaker") === "self" ? "self" : "room";
+        audioSockets.handleUpgrade(req, socket, head, (client) =>
+          streamAudio(client, meetingId.data, speaker),
+        );
+      });
       await new Promise<void>((resolve, reject) => {
         server?.once("error", reject);
         server?.listen(options.port, "127.0.0.1", resolve);
@@ -285,6 +536,10 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       for (const res of listeners.keys()) res.end();
       listeners.clear();
       polling.clear();
+      for (const set of waiters.values()) for (const wake of set) wake();
+      waiters.clear();
+      for (const client of audioSockets.clients) client.terminate();
+      audioSockets.close();
       await new Promise<void>((resolve) => {
         if (!server) return resolve();
         server.close(() => resolve());
@@ -322,7 +577,11 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         decision.delivery.actor_id === options.principalActorId
           ? polling.get(decision.delivery.surface_id ?? "")
           : undefined;
-      if (recipients.length === 0 && (!mailbox || Date.now() - mailbox.at > 15000)) {
+      const surfaceId = decision.delivery.surface_id ?? "";
+      if (
+        recipients.length === 0 &&
+        (!mailbox || (Date.now() - mailbox.at > LONG_POLL_MS + 5000 && !waiters.get(surfaceId)?.size))
+      ) {
         return makeResult({
           decision,
           status: "failed",
@@ -347,6 +606,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       if (mailbox) {
         mailbox.frames.push(JSON.parse(frame));
         mailbox.frames = mailbox.frames.slice(-20);
+        for (const wake of waiters.get(surfaceId) ?? []) wake();
       }
 
       return makeResult({

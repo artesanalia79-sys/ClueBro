@@ -20,6 +20,9 @@ const storage: Record<string, unknown> = {};
 const sent: Record<string, unknown>[] = [];
 let offline = false;
 let closed = false;
+let contextAnswer: string | null = null;
+let contextKey = "none";
+let deliveredKey = "";
 const session = {
   id: "0a869b4e-5c25-4512-ae04-04a0b708d08e",
   project: "launch",
@@ -40,6 +43,8 @@ Object.assign(window, {
       },
     },
     runtime: {
+      id: "test",
+      onMessage: { addListener: () => {} },
       sendMessage: async (message: { path: string; body?: Record<string, unknown> }) => {
         if (message.path === "/captions") {
           sent.push(structuredClone(message.body!));
@@ -53,8 +58,23 @@ Object.assign(window, {
         }
         if (message.path.startsWith("/meetings?"))
           result = [{ ...session, ended_at: closed ? new Date().toISOString() : null }];
-        if (message.path.startsWith("/suggestions?")) result = { frames: [] };
-        if (message.path.includes("/context")) result = { hits: [] };
+        // The bridge pushes context through the suggestions long poll.
+        if (message.path.startsWith("/suggestions?")) {
+          result = { frames: [] };
+          if (contextAnswer && deliveredKey !== contextKey) {
+            deliveredKey = contextKey;
+            result = {
+              frames: [
+                {
+                  kind: "context",
+                  body: contextAnswer,
+                  quote: "<script>unsafe()</script> Friday launch",
+                  source: "Sam · Planning",
+                },
+              ],
+            };
+          }
+        }
         if (message.path.startsWith("/memory/search"))
           result = {
             hits: [
@@ -87,11 +107,9 @@ const tick = async (milliseconds: number) => {
   await settle();
 };
 try {
+  // Caption text on the page means the call is live, so saving starts with
+  // nobody pressing anything.
   await tick(2000);
-  assert.equal(sent.length, 0, "captions must not be captured before Start saving");
-  (find(".project") as unknown as HTMLInputElement).value = "launch";
-  (find(".start") as unknown as HTMLButtonElement).click();
-  await settle();
   await tick(500);
   await tick(1300);
   assert.equal(sent.length, 1, "nested containers must not duplicate the leaf caption");
@@ -120,22 +138,61 @@ try {
   await tick(3000);
   assert.equal(sent.at(-1)!.caption_id, retryId, "retry identity must remain stable");
   assert.equal((storage[`cluebro-pending:${session.id}`] as unknown[]).length, 0);
-  (find("#cluebro-query") as unknown as HTMLInputElement).value = "launch";
-  find(".search").dispatchEvent(new window.Event("submit", { cancelable: true }));
-  await settle();
-  assert.match(find(".memory-results").textContent, /Friday launch/);
+
   assert.equal(
-    find(".memory-results").querySelector("script"),
+    window.document.querySelector("#cluebro-panel .start"),
     null,
-    "source text must be escaped in the panel",
+    "there is no start button: saving follows the call",
   );
-  (find(".finish") as unknown as HTMLButtonElement).click();
-  await settle();
-  assert.equal(closed, true);
-  assert.equal((find(".start") as unknown as HTMLButtonElement).disabled, false);
-  find("#caption").textContent = "After finish.";
+  assert.equal(
+    window.document.querySelector("#cluebro-panel .search"),
+    null,
+    "there is no search box: context arrives on its own",
+  );
+
+  // Context arrives as one short line, with its source folded away.
+  contextAnswer = "Friday launch";
+  contextKey = "one";
+  await tick(4000);
+  assert.match(find(".insight .answer").textContent, /Friday launch/, "context arrives without anyone asking");
+  assert.equal(find(".insights").querySelector("script"), null, "source text must be escaped in the panel");
+  assert.equal(
+    (find(".insight .why") as unknown as HTMLDetailsElement).open,
+    false,
+    "the source is available but folded away",
+  );
+
+  // A newer answer waits until the first has been on screen long enough to read.
+  contextAnswer = "Budget approved";
+  contextKey = "two";
+  await tick(4000);
+  assert.doesNotMatch(
+    find(".insights").textContent,
+    /Budget approved/,
+    "a new answer does not replace one that is still being read",
+  );
+  await tick(4000);
+  await tick(4000);
+  assert.match(
+    find(".insight .answer").textContent,
+    /Budget approved/,
+    "it appears on top once the first has had its time",
+  );
+  contextAnswer = "Friday launch";
+  contextKey = "three";
+  for (let i = 0; i < 4; i++) await tick(4000);
+  assert.equal(
+    [...find(".insights").querySelectorAll(".answer")].filter((a) => /Friday launch/.test(a.textContent ?? ""))
+      .length,
+    1,
+    "the same answer is not shown twice",
+  );
+
+  // Leaving the call closes the session.
+  find("#caption").textContent = "";
   await tick(2000);
-  assert.notEqual(sent.at(-1)!.text, "After finish.");
+  await settle();
+  assert.equal(closed, true, "leaving the call closes the session");
   (find(".collapse") as unknown as HTMLButtonElement).click();
   assert.equal(find(".collapse").getAttribute("aria-expanded"), "false");
   assert.equal((find(".panel-content") as unknown as HTMLElement).hidden, true);
@@ -143,8 +200,304 @@ try {
   await window.happyDOM.close();
 }
 
+// Joining a call starts the session and leaving it closes the session, so a
+// transcript no longer depends on remembering two buttons.
+{
+  const auto = new Window({ url: "https://meet.google.com/abc-defg-hij" });
+  let clock = Date.now();
+  const ticks = new Map<number, () => void>();
+  let id = 0;
+  auto.setInterval = ((callback: () => void) => {
+    ticks.set(++id, callback);
+    return id;
+  }) as unknown as typeof auto.setInterval;
+  auto.clearInterval = ((key: number) => {
+    ticks.delete(key);
+  }) as unknown as typeof auto.clearInterval;
+  auto.Date.now = () => clock;
+  const captions: Record<string, unknown>[] = [];
+  let finished = false;
+  const store: Record<string, unknown> = {};
+  const meeting = { ...session, id: "6f1c0f04-0a3b-4a1e-9c23-7a3f5d0e21bb", ended_at: null };
+  let autoListener:
+    | ((message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean)
+    | undefined;
+  const runtimeTypes: string[] = [];
+  const createdProjects: string[] = [];
+  Object.assign(auto, {
+    chrome: {
+      storage: {
+        local: {
+          set: async (data: Record<string, unknown>) => Object.assign(store, structuredClone(data)),
+          get: async (key: string) => ({ [key]: store[key] }),
+        },
+      },
+      runtime: {
+        id: "test",
+        onMessage: {
+          addListener: (fn: typeof autoListener) => {
+            autoListener = fn;
+          },
+        },
+        sendMessage: async (message: { type?: string; path: string; body?: Record<string, unknown> }) => {
+          runtimeTypes.push(message.type ?? "");
+          if (!message.path) return { status: 200, text: "" };
+          if (message.path === "/meetings" && message.body) createdProjects.push(String(message.body.project));
+          if (message.path === "/captions") {
+            captions.push(structuredClone(message.body!));
+            return { status: 202, text: "" };
+          }
+          let result: unknown = meeting;
+          if (message.path.endsWith("/finish")) {
+            finished = true;
+            result = { ...meeting, ended_at: new Date().toISOString() };
+          }
+          if (message.path.startsWith("/meetings?")) result = [meeting];
+          if (message.path.startsWith("/suggestions?")) result = { frames: [] };
+          if (message.path.includes("/context")) result = { hits: [] };
+          return { status: 200, text: JSON.stringify(result) };
+        },
+      },
+    },
+  });
+  // An empty caption region is what a Meet page looks like outside a call.
+  auto.document.body.innerHTML =
+    '<div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption"></span></div></div>';
+  auto.eval(script);
+  const settleAuto = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+  };
+  const tickAuto = async (ms: number) => {
+    clock += ms;
+    for (const callback of [...ticks.values()]) callback();
+    await settleAuto();
+  };
+  try {
+    await tickAuto(2000);
+    assert.equal(captions.length, 0, "a page outside a call must capture nothing");
+
+    // A tile carries no hang-up label, so this also covers a Meet running in
+    // an interface language the selectors do not spell out.
+    const tile = auto.document.createElement("div");
+    tile.setAttribute("data-participant-id", "sam");
+    auto.document.body.appendChild(tile);
+    auto.document.querySelector("#caption")!.textContent = "Shipping is Friday.";
+    await tickAuto(2000);
+    await tickAuto(500);
+    await tickAuto(1300);
+    assert.equal(captions.length, 1, "joining a call starts the session on its own");
+    assert.equal(
+      createdProjects[0],
+      "general",
+      "a meeting joins the shared project, not a project named after its Meet link",
+    );
+
+    // Leaving tears the call interface down, captions included.
+    tile.remove();
+    auto.document.querySelector("#caption")!.textContent = "";
+    await tickAuto(2000);
+    await settleAuto();
+    assert.equal(finished, true, "leaving a call closes the session on its own");
+
+    // Captions coming back mean the call is live again, so a new session
+    // opens rather than the closed one silently reopening.
+    const afterLeaving = captions.length;
+    auto.document.querySelector("#caption")!.textContent = "Back in the call.";
+    for (let i = 0; i < 4; i++) await tickAuto(1300);
+    assert.equal(captions.length, afterLeaving + 1, "rejoining a call opens a new session");
+
+
+    // The toolbar button attaches the call's audio to the panel's session, and
+    // while it records, Meet's captions are not stored a second time.
+    const audioReply = await new Promise<{ meeting_id?: string; error?: string }>((resolve) => {
+      autoListener!({ type: "cluebro-capture-begin" }, { id: "test" }, resolve as (value: unknown) => void);
+    });
+    assert.equal(audioReply.meeting_id, meeting.id, "recorded audio is attached to the panel's session");
+    const beforeAudio = captions.length;
+    auto.document.querySelector("#caption")!.textContent = "Captions while the audio is recorded.";
+    for (let i = 0; i < 4; i++) await tickAuto(1300);
+    assert.equal(captions.length, beforeAudio, "Meet captions are not stored while audio carries the call");
+
+    autoListener!({ type: "cluebro-capture-status", state: "stopped" }, { id: "test" }, () => {});
+    auto.document.querySelector("#caption")!.textContent = "Captions after the recorder stopped.";
+    for (let i = 0; i < 4; i++) await tickAuto(1300);
+    assert.equal(captions.length, beforeAudio + 1, "stopping the recorder hands the transcript back to captions");
+
+    autoListener!({ type: "cluebro-capture-begin" }, { id: "test" }, () => {});
+    await settleAuto();
+    auto.document.querySelector("#caption")!.textContent = "";
+    await tickAuto(2000);
+    await settleAuto();
+    assert.ok(runtimeTypes.includes("cluebro-capture-end"), "leaving the call stops the recorder");
+
+    // Reloading the extension kills this page's channel to it. The panel has
+    // to say what fixes that, because nothing here can fix it on its own.
+    (auto as unknown as { chrome: { runtime: { sendMessage: () => Promise<never> } } }).chrome.runtime.sendMessage =
+      () => Promise.reject(new Error("Extension context invalidated."));
+    (auto.document.querySelector("#cluebro-panel .refresh") as unknown as HTMLButtonElement).click();
+    await settleAuto();
+    assert.match(
+      auto.document.querySelector("#cluebro-panel .state")!.textContent,
+      /Reload this tab/,
+      "a stale content script tells the reader to reload",
+    );
+  } finally {
+    await auto.happyDOM.close();
+  }
+}
+
+// A project named once follows you to the next Meet link, which is what lets
+// one meeting draw context from another.
+{
+  const shared: Record<string, unknown> = {};
+  const projects: string[] = [];
+  const openMeet = async (url: string) => {
+    const page = new Window({ url });
+    let clock = Date.now();
+    const ticks = new Map<number, () => void>();
+    let id = 0;
+    page.setInterval = ((callback: () => void) => {
+      ticks.set(++id, callback);
+      return id;
+    }) as unknown as typeof page.setInterval;
+    page.clearInterval = ((key: number) => {
+      ticks.delete(key);
+    }) as unknown as typeof page.clearInterval;
+    page.Date.now = () => clock;
+    const live = { ...session, id: crypto.randomUUID(), ended_at: null };
+    Object.assign(page, {
+      chrome: {
+        storage: {
+          local: {
+            set: async (data: Record<string, unknown>) => Object.assign(shared, structuredClone(data)),
+            get: async (key: string) => ({ [key]: shared[key] }),
+          },
+        },
+        runtime: {
+          id: "test",
+          onMessage: { addListener: () => {} },
+          sendMessage: async (message: { path?: string; body?: Record<string, unknown> }) => {
+            if (message.path === "/meetings" && message.body) projects.push(String(message.body.project));
+            let result: unknown = live;
+            if (message.path?.startsWith("/meetings?")) result = [live];
+            if (message.path?.startsWith("/suggestions?")) result = { frames: [] };
+            if (message.path?.includes("/context")) result = { hits: [] };
+            return { status: 200, text: JSON.stringify(result) };
+          },
+        },
+      },
+    });
+    page.document.body.innerHTML =
+      '<div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption"></span></div></div>';
+    page.eval(script);
+    const settlePage = async () => {
+      for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+    };
+    await settlePage();
+    const join = async () => {
+      const tile = page.document.createElement("div");
+      tile.setAttribute("data-participant-id", "me");
+      page.document.body.appendChild(tile);
+      clock += 2000;
+      for (const callback of [...ticks.values()]) callback();
+      await settlePage();
+    };
+    return { page, join, settlePage };
+  };
+
+  const first = await openMeet("https://meet.google.com/aaa-aaaa-aaa");
+  try {
+    const input = first.page.document.querySelector("#cluebro-panel .project") as unknown as HTMLInputElement;
+    input.value = "Backend";
+    input.dispatchEvent(new first.page.Event("change") as unknown as Event);
+    await first.settlePage();
+  } finally {
+    await first.page.happyDOM.close();
+  }
+  const second = await openMeet("https://meet.google.com/bbb-bbbb-bbb");
+  try {
+    await second.join();
+    assert.equal(projects.at(-1), "Backend", "a project named in one Meet link is used in the next one");
+  } finally {
+    await second.page.happyDOM.close();
+  }
+}
+
+// With OpenAI transcription configured, Meet's captions are never the source:
+// they are worse than the audio and would store every sentence a second time.
+{
+  const quiet = new Window({ url: "https://meet.google.com/abc-defg-hij" });
+  let clock = Date.now();
+  const ticks = new Map<number, () => void>();
+  let id = 0;
+  quiet.setInterval = ((callback: () => void) => {
+    ticks.set(++id, callback);
+    return id;
+  }) as unknown as typeof quiet.setInterval;
+  quiet.clearInterval = ((key: number) => {
+    ticks.delete(key);
+  }) as unknown as typeof quiet.clearInterval;
+  quiet.Date.now = () => clock;
+  const stored: unknown[] = [];
+  const store: Record<string, unknown> = {};
+  const live = { ...session, id: "9b2d4c11-7e3a-4f5b-8c6d-1a2b3c4d5e6f", ended_at: null };
+  Object.assign(quiet, {
+    chrome: {
+      storage: {
+        local: {
+          set: async (data: Record<string, unknown>) => Object.assign(store, structuredClone(data)),
+          get: async (key: string) => ({ [key]: store[key] }),
+        },
+      },
+      runtime: {
+        id: "test",
+        onMessage: { addListener: () => {} },
+        sendMessage: async (message: { path?: string; body?: Record<string, unknown> }) => {
+          if (message.path === "/health")
+            return { status: 200, text: JSON.stringify({ ok: true, audio: true }) };
+          if (message.path === "/captions") {
+            stored.push(message.body);
+            return { status: 202, text: "" };
+          }
+          let result: unknown = live;
+          if (message.path?.startsWith("/meetings?")) result = [live];
+          if (message.path?.startsWith("/suggestions?")) result = { frames: [] };
+          if (message.path?.includes("/context")) result = { hits: [] };
+          return { status: 200, text: JSON.stringify(result) };
+        },
+      },
+    },
+  });
+  quiet.document.body.innerHTML =
+    '<div data-participant-id="me"></div><div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption">A Meet caption that must not be stored.</span></div></div>';
+  quiet.eval(script);
+  const settleQuiet = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+  };
+  try {
+    await settleQuiet();
+    for (let i = 0; i < 6; i++) {
+      clock += 1300;
+      for (const callback of [...ticks.values()]) callback();
+      await settleQuiet();
+    }
+    assert.equal(stored.length, 0, "Meet captions are not stored when OpenAI transcription is configured");
+    assert.match(
+      quiet.document.querySelector("#cluebro-panel .state")!.textContent,
+      /toolbar/,
+      "the panel points to the toolbar button, not to Meet captions",
+    );
+  } finally {
+    await quiet.happyDOM.close();
+  }
+}
+
 let listener: (message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean;
+let clicked: ((tab: unknown) => void) | undefined;
 const fetched: string[] = [];
+const workerCalls: string[] = [];
+const workerSent: Record<string, unknown>[] = [];
+const sessionStore: Record<string, unknown> = {};
 runInNewContext(readFileSync(new URL("../extension/background.js", import.meta.url), "utf8"), {
   chrome: {
     runtime: {
@@ -152,6 +505,56 @@ runInNewContext(readFileSync(new URL("../extension/background.js", import.meta.u
       onMessage: {
         addListener: (fn: typeof listener) => {
           listener = fn;
+        },
+      },
+      getURL: (path: string) => `chrome-extension://test/${path}`,
+      getContexts: async () => [],
+      sendMessage: async (message: Record<string, unknown>) => {
+        workerSent.push(message);
+      },
+    },
+    action: {
+      onClicked: {
+        addListener: (fn: typeof clicked) => {
+          clicked = fn;
+        },
+      },
+      setBadgeText: async (details: { text: string }) => {
+        workerCalls.push(`badge:${details.text}`);
+      },
+      setBadgeBackgroundColor: async () => {},
+      setTitle: async () => {},
+    },
+    tabs: {
+      onRemoved: { addListener: () => {} },
+      sendMessage: async (_tabId: number, message: { type: string }) =>
+        message.type === "cluebro-capture-begin"
+          ? { meeting_id: "6f1c0f04-0a3b-4a1e-9c23-7a3f5d0e21bb" }
+          : undefined,
+      create: async () => {},
+    },
+    tabCapture: {
+      getMediaStreamId: async (options: { targetTabId: number }) => {
+        workerCalls.push(`capture:${options.targetTabId}`);
+        return "stream-1";
+      },
+    },
+    offscreen: {
+      createDocument: async (options: { reasons: string[] }) => {
+        workerCalls.push(`offscreen:${options.reasons.join(",")}`);
+      },
+      closeDocument: async () => {
+        workerCalls.push("offscreen:closed");
+      },
+    },
+    storage: {
+      session: {
+        get: async (key: string) => ({ [key]: sessionStore[key] }),
+        set: async (data: Record<string, unknown>) => {
+          Object.assign(sessionStore, data);
+        },
+        remove: async (key: string) => {
+          delete sessionStore[key];
         },
       },
     },
@@ -175,6 +578,52 @@ assert.equal(
   1,
   "the worker must reject arbitrary destinations and external senders",
 );
+
+// The toolbar button is the only invocation Chrome accepts for recording a
+// tab. It asks the panel for the session, starts a recorder with no
+// silence-based lifetime, shows that it is recording, and a second click stops.
+const meetTab = { id: 7, url: "https://meet.google.com/abc-defg-hij" };
+const flush = () => new Promise((resolve) => setTimeout(resolve, 20));
+clicked!(meetTab);
+await flush();
+assert.ok(workerCalls.includes("capture:7"), "the Meet tab that was clicked is the one recorded");
+assert.ok(
+  workerCalls.includes("offscreen:USER_MEDIA"),
+  "the recorder is not given AUDIO_PLAYBACK, which closes after thirty silent seconds",
+);
+assert.equal(
+  workerSent.find((m) => m.type === "cluebro-offscreen-start")?.meetingId,
+  "6f1c0f04-0a3b-4a1e-9c23-7a3f5d0e21bb",
+  "recorded audio goes to the panel's session",
+);
+assert.ok(workerCalls.includes("badge:REC"), "the recording stays visible on the toolbar");
+clicked!(meetTab);
+await flush();
+assert.ok(workerSent.some((m) => m.type === "cluebro-offscreen-stop"), "a second click stops the recorder");
+assert.ok(workerCalls.includes("badge:"), "and clears the badge");
+clicked!({ id: 9, url: "https://example.com/" });
+await flush();
+assert.equal(
+  workerCalls.filter((call) => call.startsWith("capture:")).length,
+  1,
+  "a tab outside Meet is never recorded",
+);
+assert.ok(workerCalls.includes("badge:!"), "and the button says why instead of doing nothing");
+
+// Chrome withholds a tab's URL unless the click grants it. A silent return on
+// a missing URL is what made the button do nothing in a real call.
+const shipped = JSON.parse(
+  readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8"),
+) as { permissions: string[] };
+assert.ok(shipped.permissions.includes("activeTab"), "the click grants the tab's URL");
+clicked!({ id: 11 });
+await flush();
+assert.ok(
+  workerCalls.includes("capture:11"),
+  "a click still records when Chrome withholds the URL, because the panel answers for the tab",
+);
+clicked!({ id: 11 });
+await flush();
 console.log(
-  "Meeting panel: opt-in, caption stability, offline queue, sources, finish and worker restrictions passed.",
+  "Meeting panel: automatic session, project shared across Meet links, audio handover, no captions with OpenAI audio, caption stability, offline queue, short insights held and deduplicated, recorder toggle and worker restrictions passed.",
 );

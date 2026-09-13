@@ -13,8 +13,7 @@ export interface AppConfig {
   llmProvider: LlmChoice;
   openaiApiKey: string;
   openaiModel: string;
-  /** Any OpenAI-compatible endpoint (OpenRouter, a local gateway). Empty uses
-   *  the vendor default. Read here so the SDK never picks it up on its own. */
+  /** Any OpenAI-compatible endpoint. Empty means OpenAI itself. */
   openaiBaseUrl: string;
 
   slack: {
@@ -34,6 +33,13 @@ export interface AppConfig {
     memoryDir: string;
     /** Who the agent supports in a live meeting. Never broadcast. */
     principalActorId: string | null;
+    /** Speech-to-text for meeting audio. An empty key keeps Meet's own captions. */
+    transcription: {
+      apiKey: string;
+      model: string;
+      languages: string[];
+      delay: string;
+    };
   };
 
   policy: {
@@ -110,6 +116,12 @@ export function loadConfig(overrides: ConfigOverrides = {}): AppConfig {
       port: num("BROWSER_BRIDGE_PORT", 8787),
       memoryDir: str("MEETING_MEMORY_DIR", "meeting-memory"),
       principalActorId: str("PRINCIPAL_ACTOR_ID") || null,
+      transcription: {
+        apiKey: str("OPENAI_TRANSCRIBE_API_KEY"),
+        model: str("TRANSCRIBE_MODEL", "gpt-live-transcribe"),
+        languages: list("TRANSCRIBE_LANGUAGES").length ? list("TRANSCRIBE_LANGUAGES") : ["es"],
+        delay: str("TRANSCRIBE_DELAY", "low"),
+      },
     },
 
     policy: {

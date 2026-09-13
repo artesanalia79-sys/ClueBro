@@ -39,6 +39,18 @@ export interface MemoryHit {
   speaker: string;
   text: string;
 }
+export interface NoteHit {
+  note_id: string;
+  meeting_id: string;
+  label: string;
+  started_at: string;
+  kind: MemoryNote["kind"];
+  title: string;
+  owner: string | null;
+  due: string | null;
+  body: string;
+  evidence: MemoryNote["evidence"];
+}
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 24);
 const clean = (s: string) => s.replace(/([\\`*_{}\[\]<>#|])/g, "\\$1").replace(/[\r\n]+/g, " ");
 const words = (s: string) => [...new Set(s.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
@@ -79,7 +91,16 @@ export class MeetingMemory {
       CREATE TABLE IF NOT EXISTS notes (
         id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL REFERENCES meetings(id), payload TEXT NOT NULL
       );
+      CREATE VIRTUAL TABLE IF NOT EXISTS note_search USING fts5(note_id UNINDEXED, text, tokenize='unicode61 remove_diacritics 2');
     `);
+    // Notes written before this index existed are indexed once, on startup.
+    const indexed = Number((this.db.prepare("SELECT count(*) AS c FROM note_search").get() as { c: number }).c);
+    const stored = Number((this.db.prepare("SELECT count(*) AS c FROM notes").get() as { c: number }).c);
+    if (indexed !== stored) {
+      this.db.exec("DELETE FROM note_search");
+      for (const row of this.db.prepare("SELECT id,payload FROM notes").all())
+        this.indexNote(String(row.id), JSON.parse(String(row.payload)) as MemoryNote);
+    }
   }
 
   start(room: string, label: string, project: string): Meeting {
@@ -184,6 +205,49 @@ export class MeetingMemory {
       ) as unknown as MemoryHit[];
   }
 
+  // Organized notes carry the decision, owner and date cleanly, so they are
+  // searched as well as the raw captions they were drawn from.
+  searchNotes(project: string, query: string, excludeMeeting = ""): NoteHit[] {
+    const tokens = words(query)
+      .filter((w) => !STOP.has(w))
+      .slice(0, 16);
+    if (!tokens.length) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT n.id AS note_id, n.meeting_id, m.label, m.started_at, n.payload
+      FROM note_search s JOIN notes n ON n.id=s.note_id JOIN meetings m ON m.id=n.meeting_id
+      WHERE note_search MATCH ? AND m.project=? AND m.id<>?
+      ORDER BY bm25(note_search) LIMIT 5`,
+      )
+      .all(
+        tokens.map((w) => `"${w}"`).join(" OR "),
+        project.trim().toLocaleLowerCase(),
+        excludeMeeting,
+      );
+    return rows.map((row) => {
+      const note = JSON.parse(String(row.payload)) as MemoryNote;
+      return {
+        note_id: String(row.note_id),
+        meeting_id: String(row.meeting_id),
+        label: String(row.label),
+        started_at: String(row.started_at),
+        kind: note.kind,
+        title: note.title,
+        owner: note.owner,
+        due: note.due,
+        body: note.body,
+        evidence: note.evidence,
+      };
+    });
+  }
+
+  private indexNote(id: string, note: MemoryNote) {
+    this.db.prepare("DELETE FROM note_search WHERE note_id=?").run(id);
+    this.db
+      .prepare("INSERT INTO note_search(note_id,text) VALUES(?,?)")
+      .run(id, [note.title, note.owner ?? "", note.due ?? "", note.body].join("\n"));
+  }
+
   /** Closing is durable before extraction; a failed model call can be retried. */
   finish(id: string): Promise<Meeting> {
     const running = this.jobs.get(id);
@@ -247,6 +311,7 @@ export class MeetingMemory {
           this.db
             .prepare("INSERT OR REPLACE INTO notes VALUES(?,?,?)")
             .run(key, id, JSON.stringify(note));
+          this.indexNote(key, note);
         }
         offset += batch.length;
         this.db.prepare("UPDATE meetings SET processed_count=? WHERE id=?").run(offset, id);

@@ -1,7 +1,32 @@
 // Host permissions apply to service-worker fetches, not Meet content scripts.
+const OFFSCREEN = "offscreen.html";
+
+const fromMeetTab = (sender) =>
+  sender.id === chrome.runtime.id && Boolean(sender.tab?.url?.startsWith("https://meet.google.com/"));
+const fromOwnPage = (sender, page) =>
+  sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL(page);
+
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (message?.type !== "cluebro-request") return false;
-  if (sender.id !== chrome.runtime.id || !sender.tab?.url?.startsWith("https://meet.google.com/")) {
+  switch (message?.type) {
+    case "cluebro-request":
+      return relay(message, sender, reply);
+    case "cluebro-capture-end":
+      if (fromMeetTab(sender)) void stopCapture();
+      return false;
+    case "cluebro-offscreen-status":
+      if (fromOwnPage(sender, OFFSCREEN)) void onRecorderStatus(message);
+      return false;
+    case "cluebro-mic-granted":
+      if (fromOwnPage(sender, "permission.html"))
+        void chrome.runtime.sendMessage({ type: "cluebro-offscreen-mic", target: "offscreen" }).catch(() => {});
+      return false;
+    default:
+      return false;
+  }
+});
+
+function relay(message, sender, reply) {
+  if (!fromMeetTab(sender)) {
     reply({ error: "Requests must originate from the meeting panel." });
     return false;
   }
@@ -33,4 +58,117 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     }
   })();
   return true;
+}
+
+// Chrome only lets an extension record a tab after the extension itself is
+// invoked, and a click inside the page's panel does not count. The toolbar
+// button is that invocation, and clicking it again stops the recording.
+chrome.action.onClicked.addListener((tab) => void toggleCapture(tab));
+
+// The service worker can be stopped between events, so which tab is being
+// recorded is kept where it survives that.
+const capturedTab = async () => (await chrome.storage.session.get("captureTabId")).captureTabId;
+
+const IDLE_TITLE = "ClueBro: record and transcribe this call's audio";
+
+// A click that does nothing is the worst outcome of this button, so every
+// reason it cannot record is shown on the button itself.
+async function flag(tabId, reason) {
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: "#b3261e" }).catch(() => {});
+  await chrome.action.setBadgeText({ tabId, text: "!" }).catch(() => {});
+  await chrome.action.setTitle({ tabId, title: `ClueBro could not record: ${reason}` }).catch(() => {});
+}
+
+async function toggleCapture(tab) {
+  if (!tab?.id) return;
+  // Chrome withholds the URL without activeTab. When it is missing, the
+  // panel's reply below is the proof this is a Meet tab, since the content
+  // script only runs there.
+  if (tab.url && !tab.url.startsWith("https://meet.google.com/")) {
+    await flag(tab.id, "open a Google Meet call, then click ClueBro.");
+    return;
+  }
+  const current = await capturedTab();
+  if (current !== undefined) {
+    await stopCapture();
+    if (current === tab.id) return;
+  }
+  try {
+    // Requested first, while the click that granted it is freshest.
+    const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
+    const session = await chrome.tabs
+      .sendMessage(tab.id, { type: "cluebro-capture-begin" })
+      .catch((error) => {
+        // The usual cause: the extension was reloaded and this tab still runs
+        // the old panel, which can no longer be reached.
+        throw new Error(
+          /receiving end does not exist|could not establish connection/i.test(error.message)
+            ? "reload the Meet tab (F5), then click ClueBro again."
+            : error.message,
+        );
+      });
+    if (!session?.meeting_id) throw new Error(session?.error ?? "The meeting panel did not start a session.");
+    await ensureRecorder();
+    await chrome.storage.session.set({ captureTabId: tab.id });
+    await chrome.runtime.sendMessage({
+      type: "cluebro-offscreen-start",
+      target: "offscreen",
+      streamId,
+      meetingId: session.meeting_id,
+    });
+    // The badge is the part of the disclosure that stays visible when the
+    // panel is minimized.
+    await chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: "#b3261e" });
+    await chrome.action.setBadgeText({ tabId: tab.id, text: "REC" });
+    await chrome.action.setTitle({ tabId: tab.id, title: "ClueBro is recording this call. Click to stop." });
+  } catch (error) {
+    await tell(tab.id, "error", error.message);
+    await stopCapture();
+    await flag(tab.id, error.message);
+  }
+}
+
+async function ensureRecorder() {
+  const existing = await chrome.runtime.getContexts({
+    contextTypes: ["OFFSCREEN_DOCUMENT"],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN)],
+  });
+  if (existing.length > 0) return;
+  // USER_MEDIA only. AUDIO_PLAYBACK would close the document after thirty
+  // seconds without sound, which is an ordinary pause in a meeting.
+  await chrome.offscreen.createDocument({
+    url: OFFSCREEN,
+    reasons: ["USER_MEDIA"],
+    justification: "Records this call's audio for transcription and keeps it audible while recorded.",
+  });
+}
+
+async function stopCapture() {
+  const tabId = await capturedTab();
+  await chrome.storage.session.remove("captureTabId");
+  await chrome.runtime.sendMessage({ type: "cluebro-offscreen-stop", target: "offscreen" }).catch(() => {});
+  await chrome.offscreen.closeDocument().catch(() => {});
+  if (tabId === undefined) return;
+  await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+  await chrome.action.setTitle({ tabId, title: IDLE_TITLE }).catch(() => {});
+  await tell(tabId, "stopped");
+}
+
+async function onRecorderStatus({ state, detail }) {
+  // An offscreen document cannot show a permission prompt, so the one place
+  // the microphone can be allowed is a normal extension tab.
+  if (state === "mic-denied") await chrome.tabs.create({ url: chrome.runtime.getURL("permission.html") });
+  const tabId = await capturedTab();
+  if (tabId !== undefined) await tell(tabId, state, detail);
+  if (state === "error") await stopCapture();
+}
+
+async function tell(tabId, state, detail = "") {
+  await chrome.tabs.sendMessage(tabId, { type: "cluebro-capture-status", state, detail }).catch(() => {});
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void capturedTab().then((current) => {
+    if (current === tabId) void stopCapture();
+  });
 });
