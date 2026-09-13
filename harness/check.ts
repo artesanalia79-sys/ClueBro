@@ -360,4 +360,43 @@ console.log("\nobservability: the silences are counted separately");
   );
 }
 
+// --- model provider failures ------------------------------------------------
+// A rate limit used to surface as "notes: Required": the client turns a failed
+// call into {"error": ...}, and memory parsed that as if it were notes.
+
+{
+  const { createMeetingExtractor, createMeetingAnswerer } = await import("./meeting-memory");
+  const limited = {
+    name: "openai",
+    model: "test",
+    complete: async () => ({
+      text: JSON.stringify({ error: "429 Rate limit exceeded: free-models-per-day" }),
+      model: "test (failed)",
+      latencyMs: 0,
+    }),
+  };
+  const extract = createMeetingExtractor(limited)!;
+  const failure = await extract([event({ text: "We ship on Friday.", at: "2026-09-12T14:00:00Z" })]).then(
+    () => "no error",
+    (error: Error) => error.message,
+  );
+  check("a provider rate limit names itself when organizing notes", /429 Rate limit/.test(failure));
+  check("instead of a schema complaint nobody can act on", !/Required/.test(failure));
+  const answer = createMeetingAnswerer(limited)!;
+  const answerFailure = await answer("when do we ship?", [
+    {
+      event_id: "e1",
+      meeting_id: "m1",
+      label: "Planning",
+      occurred_at: new Date().toISOString(),
+      speaker: "Ana",
+      text: "We ship on Friday.",
+    } as never,
+  ]).then(
+    () => "no error",
+    (error: Error) => error.message,
+  );
+  check("and when answering from memory", /429 Rate limit/.test(answerFailure));
+}
+
 report("harness");

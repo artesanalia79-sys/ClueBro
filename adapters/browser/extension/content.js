@@ -295,7 +295,7 @@
       title.textContent = row.label;
       const detail = document.createElement("p");
       detail.className = "source";
-      detail.textContent = `${new Date(row.started_at).toLocaleString()} · ${row.event_count} captions · ${row.processing ? "Organizing…" : row.processing_error ? "Organization failed — retry" : row.ended_at ? (row.extraction_enabled ? `${row.processed_count}/${row.event_count} processed` : "Transcript only") : "Open"}`;
+      detail.textContent = `${new Date(row.started_at).toLocaleString()} · ${row.event_count} captions · ${row.processing ? "Organizing…" : row.processing_error ? `Organization failed: ${row.processing_error}` : row.ended_at ? (row.extraction_enabled ? `${row.processed_count}/${row.event_count} processed` : "Transcript only") : "Open"}`;
       const exportButton = document.createElement("button");
       exportButton.type = "button";
       exportButton.textContent = "Download .md";
