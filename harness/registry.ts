@@ -88,8 +88,20 @@ async function buildAdapters(
           createMeetingExtractor(llm),
         ),
         answer: createMeetingAnswerer(llm),
+        ...(config.browser.transcription.apiKey
+          ? {
+              transcribe: (await import("./stt/openai-realtime")).createOpenAiTranscription(
+                config.browser.transcription,
+              ),
+            }
+          : {}),
       });
-      log.info("adapter: browser bridge (stage 2)", { port: config.browser.port });
+      log.info("adapter: browser bridge (stage 2)", {
+        port: config.browser.port,
+        audio: config.browser.transcription.apiKey
+          ? `${config.browser.transcription.model} (${config.browser.transcription.languages.join(",")})`
+          : "off, using Meet captions",
+      });
       return {
         inbound: bridge.inbound,
         outbound: config.dryRun ? createConsoleOutbound("browser-dry-run") : bridge.outbound,

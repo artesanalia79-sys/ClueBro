@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { WebSocketServer, type RawData, type WebSocket as AudioSocket } from "ws";
 import {
   ContextEventSchema,
   makeResult,
@@ -35,7 +36,15 @@ export interface BrowserBridgeOptions {
     question: string,
     hits: MemoryHit[],
   ) => Promise<{ answer: string; sources: string[] } | null>;
+  /** Turns meeting audio into lines. Absent means captions come from Meet. */
+  transcribe?: OpenTranscription;
 }
+
+/** One audio stream in, finished lines out. The vendor lives in the harness. */
+export type OpenTranscription = (handlers: {
+  onLine(text: string): void;
+  onError(error: Error): void;
+}) => { append(pcm16: Buffer): void; close(): void };
 
 interface CaptionPayload {
   meeting_id?: string;
@@ -95,6 +104,71 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
   >();
   let server: Server | null = null;
   let stopped = false;
+
+  // Typed captions and transcribed audio are the same thing to everything
+  // downstream, so both enter memory and the pipeline through here.
+  const ingest = (payload: CaptionPayload): void => {
+    const text = (payload.text ?? "").trim();
+    const meetingId = payload.meeting_id!;
+    const meeting = options.memory.get(meetingId);
+    const event = ContextEventSchema.parse({
+      schema_version: "1.0.0",
+      event_id: `browser:${meetingId}:${payload.caption_id ?? randomUUID()}`,
+      source: {
+        adapter: "browser",
+        surface_id: meetingId,
+        surface_type: "live_meeting",
+        surface_label: meeting.label,
+      },
+      actor: {
+        actor_id: payload.speaker_id ?? payload.speaker_name ?? "unknown-speaker",
+        display_name: payload.speaker_name ?? "Unknown speaker",
+        is_agent: false,
+        ...(payload.speaker_role ? { role: payload.speaker_role } : {}),
+      },
+      occurred_at: payload.occurred_at ?? new Date().toISOString(),
+      text,
+      thread_id: null,
+      reply_to_event_id: null,
+      mentions: [],
+      metadata: { caption_offset_ms: payload.offset_ms ?? null },
+    } satisfies Record<string, unknown>);
+    if (options.memory.append(event)) queue.push(event);
+  };
+
+  const audioSockets = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
+
+  // One socket per audio source. The extension opens one for the tab (the
+  // other people) and one for the microphone (the principal), which is how
+  // speaker attribution survives a transcriber that returns no speaker labels.
+  const streamAudio = (socket: AudioSocket, meetingId: string, speaker: "self" | "room") => {
+    const stream = options.transcribe!({
+      onLine(text) {
+        try {
+          ingest({
+            meeting_id: meetingId,
+            text,
+            caption_id: `audio-${speaker}-${randomUUID()}`,
+            ...(speaker === "self"
+              ? { speaker_id: options.principalActorId, speaker_name: "You", speaker_role: "principal" }
+              : { speaker_id: "room", speaker_name: "Others", speaker_role: "participant" }),
+          });
+        } catch (error) {
+          socket.close(1011, (error instanceof Error ? error.message : "ingest failed").slice(0, 120));
+        }
+      },
+      onError(error) {
+        socket.close(1011, error.message.slice(0, 120));
+      },
+    });
+    socket.on("message", (data: RawData, isBinary: boolean) => {
+      if (!isBinary) return;
+      stream.append(
+        Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data),
+      );
+    });
+    socket.on("close", () => stream.close());
+  };
 
   const json = (res: ServerResponse, value: unknown, status = 200) => {
     res.writeHead(status, { ...CORS, "content-type": "application/json" });
@@ -245,38 +319,11 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
     if (req.method === "POST" && req.url === "/captions") {
       try {
         const payload: CaptionPayload = CaptionSchema.parse(JSON.parse(await readBody(req)));
-        const text = (payload.text ?? "").trim();
-        if (text.length === 0) {
+        if ((payload.text ?? "").trim().length === 0) {
           res.writeHead(204, CORS).end();
           return;
         }
-
-        const meetingId = payload.meeting_id!;
-        const meeting = options.memory.get(meetingId);
-        const event = ContextEventSchema.parse({
-          schema_version: "1.0.0",
-          event_id: `browser:${meetingId}:${payload.caption_id ?? randomUUID()}`,
-          source: {
-            adapter: "browser",
-            surface_id: meetingId,
-            surface_type: "live_meeting",
-            surface_label: meeting.label,
-          },
-          actor: {
-            actor_id: payload.speaker_id ?? payload.speaker_name ?? "unknown-speaker",
-            display_name: payload.speaker_name ?? "Unknown speaker",
-            is_agent: false,
-            ...(payload.speaker_role ? { role: payload.speaker_role } : {}),
-          },
-          occurred_at: payload.occurred_at ?? new Date().toISOString(),
-          text,
-          thread_id: null,
-          reply_to_event_id: null,
-          mentions: [],
-          metadata: { caption_offset_ms: payload.offset_ms ?? null },
-        } satisfies Record<string, unknown>);
-
-        if (options.memory.append(event)) queue.push(event);
+        ingest(payload);
         res.writeHead(202, CORS).end();
       } catch (err) {
         res.writeHead(400, { ...CORS, "content-type": "application/json" });
@@ -302,6 +349,26 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
           else res.end();
         });
       });
+      server.on("upgrade", (req, socket, head) => {
+        const url = new URL(req.url ?? "/", "http://127.0.0.1");
+        const origin = req.headers.origin;
+        const meetingId = z.string().uuid().safeParse(url.searchParams.get("meeting_id"));
+        // Same rule as the HTTP routes: a page that is not the extension
+        // must not be able to push audio into someone's meeting memory.
+        if (
+          url.pathname !== "/audio" ||
+          !options.transcribe ||
+          !meetingId.success ||
+          (origin && !/^chrome-extension:\/\/[a-p]{32}$/.test(origin))
+        ) {
+          socket.destroy();
+          return;
+        }
+        const speaker = url.searchParams.get("speaker") === "self" ? "self" : "room";
+        audioSockets.handleUpgrade(req, socket, head, (client) =>
+          streamAudio(client, meetingId.data, speaker),
+        );
+      });
       await new Promise<void>((resolve, reject) => {
         server?.once("error", reject);
         server?.listen(options.port, "127.0.0.1", resolve);
@@ -318,6 +385,8 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       for (const res of listeners.keys()) res.end();
       listeners.clear();
       polling.clear();
+      for (const client of audioSockets.clients) client.terminate();
+      audioSockets.close();
       await new Promise<void>((resolve) => {
         if (!server) return resolve();
         server.close(() => resolve());

@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { createServer } from "node:net";
+import WebSocket from "ws";
 import { ActionDecisionSchema, ContextEventSchema, type ContextEvent } from "@contracts";
 import { MeetingMemory, type ExtractNotes } from "./memory";
 import { createBrowserBridge } from "./index";
@@ -152,6 +153,11 @@ try {
     port,
     principalActorId: "owner-a",
     memory,
+    // Stands in for the vendor: every chunk of audio becomes one finished line.
+    transcribe: ({ onLine }) => ({
+      append: (chunk) => onLine(`Heard ${chunk.length} bytes of audio.`),
+      close: () => {},
+    }),
     answer: async (_question, hits) => {
       answered++;
       return { answer: "Earlier: Friday launch", sources: [hits[0]!.event_id] };
@@ -241,6 +247,38 @@ try {
   const repeat = (await (await fetch(contextUrl)).json()) as { synthesis: { answer: string } | null };
   assert.equal(repeat.synthesis?.answer, "Earlier: Friday launch");
   assert.equal(answered, 1, "unchanged excerpts reuse the answer instead of asking again");
+
+  // Audio from the microphone becomes a caption attributed to the principal,
+  // through the same path a typed caption takes.
+  const extension = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
+  const before = memory.get(session.id).event_count;
+  await new Promise<void>((resolve, reject) => {
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${port}/audio?meeting_id=${session.id}&speaker=self`,
+      { origin: extension },
+    );
+    socket.on("open", () => {
+      socket.send(Buffer.alloc(480), { binary: true });
+      setTimeout(() => {
+        socket.close();
+        resolve();
+      }, 100);
+    });
+    socket.on("error", reject);
+  });
+  assert.equal(memory.get(session.id).event_count, before + 1, "transcribed audio is stored as a caption");
+  const heard = memory.events(session.id).at(-1)!;
+  assert.equal(heard.text, "Heard 480 bytes of audio.");
+  assert.equal(heard.actor.display_name, "You", "the microphone stream is the principal speaking");
+
+  const refused = await new Promise<boolean>((resolve) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/audio?meeting_id=${session.id}`, {
+      origin: "https://evil.example",
+    });
+    socket.on("open", () => resolve(false));
+    socket.on("error", () => resolve(true));
+  });
+  assert.equal(refused, true, "a page that is not the extension cannot stream audio in");
 
   assert.equal((await post(`/meetings/${session.id}/finish`, {})).status, 202);
   console.log(
