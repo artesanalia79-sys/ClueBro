@@ -243,11 +243,20 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         do {
           run.again = false;
           try {
-            const { context } = await contextFor(meetingId);
+            const { hits, context } = await contextFor(meetingId);
             const text = context?.synthesis?.answer;
             if (text && pushed.get(meetingId) !== text) {
               pushed.set(meetingId, text);
               pushFrame(meetingId, { kind: "context", body: text, quote: context.quote, source: context.source });
+              console.log(`  context: pushed to panel (meeting ${meetingId.slice(0, 8)}): "${text}"`);
+            } else if (hits.length > 0) {
+              // The lookup ran and found candidates, but nothing was shown --
+              // either the model returned no answer, or it repeated the last
+              // one and got deduplicated. Without this, "nothing appeared" and
+              // "nothing was even tried" look identical from the terminal.
+              console.log(
+                `  context: ${hits.length} candidate(s) found (meeting ${meetingId.slice(0, 8)}), nothing new to show`,
+              );
             }
           } catch (error) {
             // The panel stays as it was and the next line retries, but the
