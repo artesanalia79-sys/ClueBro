@@ -20,9 +20,8 @@ Requires Node **22.13 or newer** (built-in SQLite) and Chrome/Edge.
 5. Load `adapters/browser/extension` as an unpacked extension in
    `chrome://extensions` (or reload it if already installed), then reload Meet.
 6. Join the call. Only without `OPENAI_TRANSCRIBE_API_KEY`, enable Meet captions too. Saving starts on its own once the
-   call is live and the panel says so; **Start saving** does the same by hand.
-7. Leaving the call closes the session and starts organizing. **Finish &
-   organize** does it by hand. Captions are already in SQLite; note extraction
+   call is live and the panel says so.
+7. Leaving the call closes the session and starts organizing. Captions are already in SQLite; note extraction
    continues in the bridge process. History shows its progress and offers a
    retry if the model fails.
 8. Optional, for better transcripts: set `OPENAI_TRANSCRIBE_API_KEY` and click
@@ -80,8 +79,10 @@ The default directory is excluded from Git; exclude a custom directory yourself.
   source IDs. The original excerpts remain visible. On failure, only excerpts
   are shown. Citation validation does not prove every interpretation is correct.
 - While saving, the panel checks recent captions for matching excerpts from other
-  meetings in the same project every 4 seconds. Typing a query pauses automatic
-  replacement of results.
+  meetings in the same project every 4 seconds, and shows at most one short
+  answer at a time. A new answer waits until the current one has been on screen
+  for 12 seconds; the same answer is never shown twice, and the source is folded
+  under it. When the model finds nothing relevant, nothing is shown.
 - Closing commits immediately and starts background organization. Extraction
   checkpoints make retries idempotent and survive restarts. A stopped process
   does not auto-run AI jobs on startup; use **Retry organizing** / **Organize**.

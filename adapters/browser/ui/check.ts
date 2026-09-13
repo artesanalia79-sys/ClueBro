@@ -20,6 +20,8 @@ const storage: Record<string, unknown> = {};
 const sent: Record<string, unknown>[] = [];
 let offline = false;
 let closed = false;
+let contextAnswer: string | null = null;
+let contextKey = "none";
 const session = {
   id: "0a869b4e-5c25-4512-ae04-04a0b708d08e",
   project: "launch",
@@ -56,7 +58,22 @@ Object.assign(window, {
         if (message.path.startsWith("/meetings?"))
           result = [{ ...session, ended_at: closed ? new Date().toISOString() : null }];
         if (message.path.startsWith("/suggestions?")) result = { frames: [] };
-        if (message.path.includes("/context")) result = { hits: [] };
+        if (message.path.includes("/context"))
+          result = contextAnswer
+            ? {
+                hits: [
+                  {
+                    event_id: contextKey,
+                    meeting_id: session.id,
+                    label: "Planning",
+                    occurred_at: session.started_at,
+                    speaker: "Sam",
+                    text: "<script>unsafe()</script> Friday launch",
+                  },
+                ],
+                synthesis: { answer: contextAnswer, sources: [contextKey] },
+              }
+            : { hits: [] };
         if (message.path.startsWith("/memory/search"))
           result = {
             hits: [
@@ -89,11 +106,9 @@ const tick = async (milliseconds: number) => {
   await settle();
 };
 try {
+  // Caption text on the page means the call is live, so saving starts with
+  // nobody pressing anything.
   await tick(2000);
-  assert.equal(sent.length, 0, "captions must not be captured before Start saving");
-  (find(".project") as unknown as HTMLInputElement).value = "launch";
-  (find(".start") as unknown as HTMLButtonElement).click();
-  await settle();
   await tick(500);
   await tick(1300);
   assert.equal(sent.length, 1, "nested containers must not duplicate the leaf caption");
@@ -122,22 +137,61 @@ try {
   await tick(3000);
   assert.equal(sent.at(-1)!.caption_id, retryId, "retry identity must remain stable");
   assert.equal((storage[`cluebro-pending:${session.id}`] as unknown[]).length, 0);
-  (find("#cluebro-query") as unknown as HTMLInputElement).value = "launch";
-  find(".search").dispatchEvent(new window.Event("submit", { cancelable: true }));
-  await settle();
-  assert.match(find(".memory-results").textContent, /Friday launch/);
+
   assert.equal(
-    find(".memory-results").querySelector("script"),
+    window.document.querySelector("#cluebro-panel .start"),
     null,
-    "source text must be escaped in the panel",
+    "there is no start button: saving follows the call",
   );
-  (find(".finish") as unknown as HTMLButtonElement).click();
-  await settle();
-  assert.equal(closed, true);
-  assert.equal((find(".start") as unknown as HTMLButtonElement).disabled, false);
-  find("#caption").textContent = "After finish.";
+  assert.equal(
+    window.document.querySelector("#cluebro-panel .search"),
+    null,
+    "there is no search box: context arrives on its own",
+  );
+
+  // Context arrives as one short line, with its source folded away.
+  contextAnswer = "Friday launch";
+  contextKey = "one";
+  await tick(4000);
+  assert.match(find(".insight .answer").textContent, /Friday launch/, "context arrives without anyone asking");
+  assert.equal(find(".insights").querySelector("script"), null, "source text must be escaped in the panel");
+  assert.equal(
+    (find(".insight .why") as unknown as HTMLDetailsElement).open,
+    false,
+    "the source is available but folded away",
+  );
+
+  // A newer answer waits until the first has been on screen long enough to read.
+  contextAnswer = "Budget approved";
+  contextKey = "two";
+  await tick(4000);
+  assert.doesNotMatch(
+    find(".insights").textContent,
+    /Budget approved/,
+    "a new answer does not replace one that is still being read",
+  );
+  await tick(4000);
+  await tick(4000);
+  assert.match(
+    find(".insight .answer").textContent,
+    /Budget approved/,
+    "it appears on top once the first has had its time",
+  );
+  contextAnswer = "Friday launch";
+  contextKey = "three";
+  for (let i = 0; i < 4; i++) await tick(4000);
+  assert.equal(
+    [...find(".insights").querySelectorAll(".answer")].filter((a) => /Friday launch/.test(a.textContent ?? ""))
+      .length,
+    1,
+    "the same answer is not shown twice",
+  );
+
+  // Leaving the call closes the session.
+  find("#caption").textContent = "";
   await tick(2000);
-  assert.notEqual(sent.at(-1)!.text, "After finish.");
+  await settle();
+  assert.equal(closed, true, "leaving the call closes the session");
   (find(".collapse") as unknown as HTMLButtonElement).click();
   assert.equal(find(".collapse").getAttribute("aria-expanded"), "false");
   assert.equal((find(".panel-content") as unknown as HTMLElement).hidden, true);
@@ -244,14 +298,6 @@ try {
     for (let i = 0; i < 4; i++) await tickAuto(1300);
     assert.equal(captions.length, afterLeaving + 1, "rejoining a call opens a new session");
 
-    // Stopping by hand has to survive captions that keep arriving, or the
-    // watcher would undo the decision two seconds later.
-    (auto.document.querySelector("#cluebro-panel .finish") as unknown as HTMLButtonElement).click();
-    await settleAuto();
-    const afterStopping = captions.length;
-    auto.document.querySelector("#caption")!.textContent = "Still talking afterwards.";
-    for (let i = 0; i < 4; i++) await tickAuto(1300);
-    assert.equal(captions.length, afterStopping, "an explicit stop is not undone by the watcher");
 
     // The toolbar button attaches the call's audio to the panel's session, and
     // while it records, Meet's captions are not stored a second time.
@@ -271,9 +317,10 @@ try {
 
     autoListener!({ type: "cluebro-capture-begin" }, { id: "test" }, () => {});
     await settleAuto();
-    (auto.document.querySelector("#cluebro-panel .finish") as unknown as HTMLButtonElement).click();
+    auto.document.querySelector("#caption")!.textContent = "";
+    await tickAuto(2000);
     await settleAuto();
-    assert.ok(runtimeTypes.includes("cluebro-capture-end"), "finishing the meeting stops the recorder");
+    assert.ok(runtimeTypes.includes("cluebro-capture-end"), "leaving the call stops the recorder");
 
     // Reloading the extension kills this page's channel to it. The panel has
     // to say what fixes that, because nothing here can fix it on its own.
@@ -493,5 +540,5 @@ assert.ok(
 clicked!({ id: 11 });
 await flush();
 console.log(
-  "Meeting panel: automatic session, audio handover, no captions with OpenAI audio, caption stability, offline queue, sources, finish, recorder toggle and worker restrictions passed.",
+  "Meeting panel: automatic session, audio handover, no captions with OpenAI audio, caption stability, offline queue, short insights held and deduplicated, recorder toggle and worker restrictions passed.",
 );
