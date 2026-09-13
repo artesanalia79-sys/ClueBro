@@ -391,6 +391,7 @@ runInNewContext(readFileSync(new URL("../extension/background.js", import.meta.u
         workerCalls.push(`badge:${details.text}`);
       },
       setBadgeBackgroundColor: async () => {},
+      setTitle: async () => {},
     },
     tabs: {
       onRemoved: { addListener: () => {} },
@@ -475,6 +476,22 @@ assert.equal(
   1,
   "a tab outside Meet is never recorded",
 );
+assert.ok(workerCalls.includes("badge:!"), "and the button says why instead of doing nothing");
+
+// Chrome withholds a tab's URL unless the click grants it. A silent return on
+// a missing URL is what made the button do nothing in a real call.
+const shipped = JSON.parse(
+  readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8"),
+) as { permissions: string[] };
+assert.ok(shipped.permissions.includes("activeTab"), "the click grants the tab's URL");
+clicked!({ id: 11 });
+await flush();
+assert.ok(
+  workerCalls.includes("capture:11"),
+  "a click still records when Chrome withholds the URL, because the panel answers for the tab",
+);
+clicked!({ id: 11 });
+await flush();
 console.log(
   "Meeting panel: automatic session, audio handover, no captions with OpenAI audio, caption stability, offline queue, sources, finish, recorder toggle and worker restrictions passed.",
 );

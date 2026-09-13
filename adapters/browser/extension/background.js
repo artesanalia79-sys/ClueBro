@@ -69,8 +69,25 @@ chrome.action.onClicked.addListener((tab) => void toggleCapture(tab));
 // recorded is kept where it survives that.
 const capturedTab = async () => (await chrome.storage.session.get("captureTabId")).captureTabId;
 
+const IDLE_TITLE = "ClueBro: record and transcribe this call's audio";
+
+// A click that does nothing is the worst outcome of this button, so every
+// reason it cannot record is shown on the button itself.
+async function flag(tabId, reason) {
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: "#b3261e" }).catch(() => {});
+  await chrome.action.setBadgeText({ tabId, text: "!" }).catch(() => {});
+  await chrome.action.setTitle({ tabId, title: `ClueBro could not record: ${reason}` }).catch(() => {});
+}
+
 async function toggleCapture(tab) {
-  if (!tab?.id || !tab.url?.startsWith("https://meet.google.com/")) return;
+  if (!tab?.id) return;
+  // Chrome withholds the URL without activeTab. When it is missing, the
+  // panel's reply below is the proof this is a Meet tab, since the content
+  // script only runs there.
+  if (tab.url && !tab.url.startsWith("https://meet.google.com/")) {
+    await flag(tab.id, "open a Google Meet call, then click ClueBro.");
+    return;
+  }
   const current = await capturedTab();
   if (current !== undefined) {
     await stopCapture();
@@ -79,7 +96,17 @@ async function toggleCapture(tab) {
   try {
     // Requested first, while the click that granted it is freshest.
     const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id });
-    const session = await chrome.tabs.sendMessage(tab.id, { type: "cluebro-capture-begin" });
+    const session = await chrome.tabs
+      .sendMessage(tab.id, { type: "cluebro-capture-begin" })
+      .catch((error) => {
+        // The usual cause: the extension was reloaded and this tab still runs
+        // the old panel, which can no longer be reached.
+        throw new Error(
+          /receiving end does not exist|could not establish connection/i.test(error.message)
+            ? "reload the Meet tab (F5), then click ClueBro again."
+            : error.message,
+        );
+      });
     if (!session?.meeting_id) throw new Error(session?.error ?? "The meeting panel did not start a session.");
     await ensureRecorder();
     await chrome.storage.session.set({ captureTabId: tab.id });
@@ -93,9 +120,11 @@ async function toggleCapture(tab) {
     // panel is minimized.
     await chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: "#b3261e" });
     await chrome.action.setBadgeText({ tabId: tab.id, text: "REC" });
+    await chrome.action.setTitle({ tabId: tab.id, title: "ClueBro is recording this call. Click to stop." });
   } catch (error) {
     await tell(tab.id, "error", error.message);
     await stopCapture();
+    await flag(tab.id, error.message);
   }
 }
 
@@ -121,6 +150,7 @@ async function stopCapture() {
   await chrome.offscreen.closeDocument().catch(() => {});
   if (tabId === undefined) return;
   await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => {});
+  await chrome.action.setTitle({ tabId, title: IDLE_TITLE }).catch(() => {});
   await tell(tabId, "stopped");
 }
 

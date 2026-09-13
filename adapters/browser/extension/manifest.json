@@ -3,7 +3,7 @@
   "name": "ClueBro meeting support",
   "version": "0.3.0",
   "description": "Shows contextual support during a meeting, with sources, to the person using it.",
-  "permissions": ["storage", "tabCapture", "offscreen"],
+  "permissions": ["storage", "tabCapture", "offscreen", "activeTab"],
   "background": { "service_worker": "background.js" },
   "action": { "default_title": "ClueBro: record and transcribe this call's audio" },
   "host_permissions": ["http://127.0.0.1:8787/*", "ws://127.0.0.1:8787/*"],
