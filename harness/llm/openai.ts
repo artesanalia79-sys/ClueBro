@@ -1,5 +1,13 @@
 import OpenAI from "openai";
-import type { LlmClient, LlmRequest, LlmResponse } from "@contracts";
+import type { LlmClient, LlmRequest, LlmResponse, Logger } from "@contracts";
+
+/**
+ * Marks a response that came back from the error path. The decision log reads
+ * this to say on screen that a block ran without the model, because a silent
+ * fallback to regex is exactly the kind of invisible decision this product
+ * exists to refuse.
+ */
+export const FAILED_SUFFIX = "(failed)";
 
 /**
  * The only file in this repo that imports a model vendor SDK.
@@ -16,6 +24,9 @@ export interface OpenAiOptions {
   baseUrl?: string;
   timeoutMs?: number;
   maxRetries?: number;
+  /** So a failing model is reported once, out loud, instead of silently
+   *  degrading every decision to the heuristic prefilter. */
+  log?: Logger;
 }
 
 export function createOpenAiLlm(options: OpenAiOptions): LlmClient {
@@ -31,6 +42,15 @@ export function createOpenAiLlm(options: OpenAiOptions): LlmClient {
     timeout: options.timeoutMs ?? 20_000,
     maxRetries: options.maxRetries ?? 1,
   });
+
+  // One line per distinct failure, not one per call. Eleven copies of the same
+  // message is how a real problem gets scrolled past.
+  const reported = new Set<string>();
+  const reportOnce = (message: string): void => {
+    if (reported.has(message)) return;
+    reported.add(message);
+    options.log?.warn("model call failed, falling back to heuristics", { error: message });
+  };
 
   return {
     name: "openai",
@@ -60,9 +80,10 @@ export function createOpenAiLlm(options: OpenAiOptions): LlmClient {
         // the caller records the failure. The agent goes quiet, it does not
         // crash the process in the middle of a demo.
         const message = err instanceof Error ? err.message : String(err);
+        reportOnce(message);
         return {
           text: JSON.stringify({ error: message }),
-          model: `${options.model} (failed)`,
+          model: `${options.model} ${FAILED_SUFFIX}`,
           latencyMs: Date.now() - started,
         };
       }

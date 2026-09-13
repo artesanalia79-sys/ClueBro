@@ -84,13 +84,60 @@ const prefersPrivate = (o: Observation): boolean =>
 const secondsSince = (then: Date | undefined, now: Date): number =>
   then === undefined ? Number.POSITIVE_INFINITY : (now.getTime() - then.getTime()) / 1000;
 
-const answersQuestion = (text: string): boolean => {
-  const words = text.match(/[\p{L}\p{N}]+/gu) ?? [];
+/**
+ * Words too common to prove that two lines are about the same thing. Kept
+ * short and multilingual on purpose: this is a relevance floor, not a parser.
+ */
+const STOPWORDS = new Set([
+  "about","actually","after","already","also","anyone","anybody","because","been","before",
+  "being","could","does","doing","done","from","have","having","here","into","just","know",
+  "like","made","make","much","need","only","other","over","really","should","some","still",
+  "such","than","that","their","them","then","there","these","they","thing","think","this",
+  "those","through","today","user","very","want","were","what","when","where","which","while",
+  "will","with","would","your","para","pero","como","cuando","donde","porque","todavia","sobre",
+  "esta","este","esto","eso","hay","del","los","las","una","uno","por","con","sin","que","aun",
+]);
+
+/** Content words long enough to carry meaning, lowercased for comparison. */
+const contentWords = (text: string): Set<string> =>
+  new Set(
+    (text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter(
+      (w) => w.length >= 4 && !STOPWORDS.has(w),
+    ),
+  );
+
+/**
+ * Does this line answer THAT question?
+ *
+ * Length alone cannot establish it. "The cafeteria is closed today" is four
+ * words and answers nothing, and silencing on it makes the log state something
+ * false -- which is worse than staying noisy, because the reason codes are the
+ * product. So a reply must also be about the same subject: it has to share a
+ * content word with the question it is supposed to have answered.
+ *
+ * This is a floor, not comprehension. It is here to reject the obviously
+ * unrelated, and it errs toward letting the agent speak, because a wrong
+ * silence is invisible and a wrong reason is a lie.
+ */
+const answersQuestion = (reply: string, question: string): boolean => {
+  const words = reply.match(/[\p{L}\p{N}]+/gu) ?? [];
+  if (words.length < 4) return false;
+
   const defersAnAnswer =
     /\b(let me|i(?:'ll| will)|we(?:'ll| will)|checking|check and|pull that up|hold on|one moment|be right back)\b/i.test(
-      text,
+      reply,
     );
-  return words.length >= 4 && !defersAnAnswer;
+  if (defersAnAnswer) return false;
+
+  // A reply that is itself a question is somebody asking back, not answering.
+  if (reply.trim().endsWith("?")) return false;
+
+  const asked = contentWords(question);
+  if (asked.size === 0) return false;
+  for (const word of contentWords(reply)) {
+    if (asked.has(word)) return true;
+  }
+  return false;
 };
 
 const answeredByAnotherPerson = (
@@ -114,7 +161,7 @@ const answeredByAnotherPerson = (
         (event) =>
           !event.actor.is_agent &&
           event.actor.actor_id !== question.actor.actor_id &&
-          answersQuestion(event.text),
+          answersQuestion(event.text, question.text),
       ) ?? null
   );
 };

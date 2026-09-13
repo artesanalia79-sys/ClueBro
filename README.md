@@ -1,5 +1,7 @@
 # ClueBro
 
+[![ci](https://github.com/artesanalia79-sys/ClueBro/actions/workflows/ci.yml/badge.svg)](https://github.com/artesanalia79-sys/ClueBro/actions/workflows/ci.yml)
+
 An agent that lives inside a Slack workspace as one more member of the team.
 
 Nobody invites it into a conversation. Nobody mentions it. It reads the
@@ -24,6 +26,9 @@ No Slack account, no API key, no network:
 npm install
 npm run replay:demo
 ```
+
+Node 22.13 or newer. The replay itself runs on older Node; `npm run ci` does
+not, because the meeting memory uses the built-in `node:sqlite`.
 
 That replays a saved conversation through the real pipeline and prints every
 decision. Then:
