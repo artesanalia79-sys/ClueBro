@@ -19,20 +19,62 @@ export interface OpenAiTranscriptionOptions {
   url?: string;
 }
 
-// Audio that arrives before the socket opens is held, but only this much: a
-// connection that never opens must not turn a meeting into unbounded memory.
-const MAX_BACKLOG_CHUNKS = 200;
+// 24 kHz, 16-bit, mono.
+const BYTES_PER_MS = 48;
+// Above background hiss, well below conversational speech.
+const SPEECH_RMS = 600;
+// A pause this long after speech ends the sentence.
+const SILENCE_TO_COMMIT_MS = 700;
+// Someone talking without pause still gets a line this often, instead of the
+// transcript waiting for them to breathe.
+const MAX_UTTERANCE_MS = 15_000;
+// How long to wait for the last sentence after the stream is closed.
+const CLOSE_GRACE_MS = 3_000;
+// Messages queued before the socket opens, but only this many: a connection
+// that never opens must not turn a meeting into unbounded memory.
+const MAX_BACKLOG = 400;
+
+const rms = (chunk: Buffer): number => {
+  const samples = Math.floor(chunk.length / 2);
+  if (samples === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < samples; i++) {
+    const sample = chunk.readInt16LE(i * 2);
+    sum += sample * sample;
+  }
+  return Math.sqrt(sum / samples);
+};
 
 export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): OpenTranscription {
   return ({ onLine, onError }) => {
     const socket = new WebSocket(options.url ?? "wss://api.openai.com/v1/realtime?intent=transcription", {
       headers: { Authorization: `Bearer ${options.apiKey}` },
     });
-    const backlog: Buffer[] = [];
+    const backlog: string[] = [];
     let open = false;
+    let closing = false;
+    let awaiting = 0;
+    let heardSpeech = false;
+    let silenceMs = 0;
+    let utteranceMs = 0;
 
-    const send = (chunk: Buffer) =>
-      socket.send(JSON.stringify({ type: "input_audio_buffer.append", audio: chunk.toString("base64") }));
+    const send = (message: object) => {
+      const serialized = JSON.stringify(message);
+      if (open) socket.send(serialized);
+      else if (backlog.length < MAX_BACKLOG) backlog.push(serialized);
+    };
+
+    // This model rejects server-side turn detection, so the sentence
+    // boundaries are ours to draw: without a commit it streams partial text
+    // forever and never finishes a line.
+    const commit = () => {
+      if (!heardSpeech) return;
+      send({ type: "input_audio_buffer.commit" });
+      awaiting++;
+      heardSpeech = false;
+      silenceMs = 0;
+      utteranceMs = 0;
+    };
 
     socket.on("open", () => {
       open = true;
@@ -49,21 +91,13 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
                   languages: options.languages,
                   delay: options.delay,
                 },
-                // Server-side turn detection closes each utterance on a pause,
-                // which is what makes a completed line a sentence rather than
-                // an arbitrary slice of audio.
-                turn_detection: {
-                  type: "server_vad",
-                  threshold: 0.5,
-                  prefix_padding_ms: 300,
-                  silence_duration_ms: 500,
-                },
+                turn_detection: null,
               },
             },
           },
         }),
       );
-      for (const chunk of backlog.splice(0)) send(chunk);
+      for (const message of backlog.splice(0)) socket.send(message);
     });
 
     socket.on("message", (data) => {
@@ -76,8 +110,10 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
       // Deltas are ignored on purpose: a caption is stored once, and storing
       // every partial would feed detection half-sentences it cannot judge.
       if (event.type === "conversation.item.input_audio_transcription.completed") {
+        awaiting = Math.max(0, awaiting - 1);
         const text = String(event.transcript ?? "").trim();
         if (text) onLine(text);
+        if (closing && awaiting === 0) socket.close();
       } else if (event.type === "error") {
         onError(new Error(`transcription: ${event.error?.message ?? "unknown error"}`));
       }
@@ -87,11 +123,26 @@ export function createOpenAiTranscription(options: OpenAiTranscriptionOptions): 
 
     return {
       append(chunk) {
-        if (open) send(chunk);
-        else if (backlog.length < MAX_BACKLOG_CHUNKS) backlog.push(chunk);
+        if (closing) return;
+        send({ type: "input_audio_buffer.append", audio: chunk.toString("base64") });
+        const ms = chunk.length / BYTES_PER_MS;
+        if (rms(chunk) >= SPEECH_RMS) {
+          heardSpeech = true;
+          silenceMs = 0;
+        } else if (heardSpeech) {
+          silenceMs += ms;
+        }
+        if (heardSpeech) utteranceMs += ms;
+        if (heardSpeech && (silenceMs >= SILENCE_TO_COMMIT_MS || utteranceMs >= MAX_UTTERANCE_MS)) commit();
       },
       close() {
-        socket.close();
+        if (closing) return;
+        closing = true;
+        // The call ending mid-sentence is the normal case, not an edge case:
+        // the last thing said before hanging up is often the decision.
+        commit();
+        if (awaiting === 0) socket.close();
+        else setTimeout(() => socket.close(), CLOSE_GRACE_MS).unref();
       },
     };
   };
