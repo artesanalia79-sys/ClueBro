@@ -142,6 +142,11 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
   // other people) and one for the microphone (the principal), which is how
   // speaker attribution survives a transcriber that returns no speaker labels.
   const streamAudio = (socket: AudioSocket, meetingId: string, speaker: "self" | "room") => {
+    // Audio problems happen in a browser nobody is watching, so the terminal
+    // running the bridge is the one place that has to say what the recorder did.
+    const source = speaker === "self" ? "microphone" : "tab";
+    console.log(`  audio: ${source} connected (meeting ${meetingId.slice(0, 8)})`);
+    let chunks = 0;
     const stream = options.transcribe!({
       onLine(text) {
         try {
@@ -154,20 +159,27 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
               : { speaker_id: "room", speaker_name: "Others", speaker_role: "participant" }),
           });
         } catch (error) {
-          socket.close(1011, (error instanceof Error ? error.message : "ingest failed").slice(0, 120));
+          const message = error instanceof Error ? error.message : "ingest failed";
+          console.log(`  audio: ${source} line could not be stored: ${message}`);
+          socket.close(1011, message.slice(0, 120));
         }
       },
       onError(error) {
+        console.log(`  audio: ${source} transcription failed: ${error.message}`);
         socket.close(1011, error.message.slice(0, 120));
       },
     });
     socket.on("message", (data: RawData, isBinary: boolean) => {
       if (!isBinary) return;
+      if (++chunks === 1) console.log(`  audio: ${source} is receiving sound`);
       stream.append(
         Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data),
       );
     });
-    socket.on("close", () => stream.close());
+    socket.on("close", (code: number) => {
+      console.log(`  audio: ${source} disconnected (code ${code}) after ${chunks} chunks`);
+      stream.close();
+    });
   };
 
   const json = (res: ServerResponse, value: unknown, status = 200) => {
