@@ -75,11 +75,23 @@
     el(".state").textContent = text;
   };
   const project = () => el(".project").value.trim();
-  try {
-    el(".project").value = sessionStorage.getItem(`cluebro-project:${ROOM}`) || ROOM;
-  } catch {
-    el(".project").value = ROOM;
-  }
+  // One project for every meeting until someone names another, remembered
+  // across Meet links. Defaulting to the link made every link its own project,
+  // so no meeting could ever draw context from a previous one.
+  const DEFAULT_PROJECT = "general";
+  const PROJECT_KEY = "cluebro-project";
+  el(".project").value = DEFAULT_PROJECT;
+  const projectReady = chrome.storage.local
+    .get(PROJECT_KEY)
+    .then((stored) => {
+      const saved = stored?.[PROJECT_KEY];
+      if (typeof saved === "string" && saved.trim()) el(".project").value = saved;
+    })
+    .catch(() => {});
+  const saveProject = () => {
+    if (project()) void chrome.storage.local.set({ [PROJECT_KEY]: project() }).catch(() => {});
+  };
+  el(".project").addEventListener("change", saveProject);
 
   // Reloading the extension leaves this page running the previous content
   // script, whose channel to it is already gone. Nothing recovers without a
@@ -120,7 +132,7 @@
   }
   function remember() {
     if (meeting) sessionStorage.setItem(SESSION_KEY, JSON.stringify(meeting));
-    sessionStorage.setItem(`cluebro-project:${ROOM}`, project());
+    saveProject();
   }
   function persistQueue() {
     const key = `cluebro-pending:${meeting.id}`,
@@ -364,6 +376,9 @@
     stream = setInterval(poll, 3000);
   }
   async function startSaving(automatic = false) {
+    // A session created before the remembered project loads would land in
+    // the default project and be cut off from its own history.
+    await projectReady;
     if (!project()) {
       el(".more").open = true;
       el(".project").focus();
@@ -547,6 +562,7 @@
   }, 1000);
   void (async () => {
     try {
+      await projectReady;
       const stored = sessionStorage.getItem(SESSION_KEY);
       if (stored) {
         meeting = JSON.parse(stored);

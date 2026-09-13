@@ -222,6 +222,7 @@ try {
     | ((message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean)
     | undefined;
   const runtimeTypes: string[] = [];
+  const createdProjects: string[] = [];
   Object.assign(auto, {
     chrome: {
       storage: {
@@ -240,6 +241,7 @@ try {
         sendMessage: async (message: { type?: string; path: string; body?: Record<string, unknown> }) => {
           runtimeTypes.push(message.type ?? "");
           if (!message.path) return { status: 200, text: "" };
+          if (message.path === "/meetings" && message.body) createdProjects.push(String(message.body.project));
           if (message.path === "/captions") {
             captions.push(structuredClone(message.body!));
             return { status: 202, text: "" };
@@ -283,6 +285,11 @@ try {
     await tickAuto(500);
     await tickAuto(1300);
     assert.equal(captions.length, 1, "joining a call starts the session on its own");
+    assert.equal(
+      createdProjects[0],
+      "general",
+      "a meeting joins the shared project, not a project named after its Meet link",
+    );
 
     // Leaving tears the call interface down, captions included.
     tile.remove();
@@ -335,6 +342,83 @@ try {
     );
   } finally {
     await auto.happyDOM.close();
+  }
+}
+
+// A project named once follows you to the next Meet link, which is what lets
+// one meeting draw context from another.
+{
+  const shared: Record<string, unknown> = {};
+  const projects: string[] = [];
+  const openMeet = async (url: string) => {
+    const page = new Window({ url });
+    let clock = Date.now();
+    const ticks = new Map<number, () => void>();
+    let id = 0;
+    page.setInterval = ((callback: () => void) => {
+      ticks.set(++id, callback);
+      return id;
+    }) as unknown as typeof page.setInterval;
+    page.clearInterval = ((key: number) => {
+      ticks.delete(key);
+    }) as unknown as typeof page.clearInterval;
+    page.Date.now = () => clock;
+    const live = { ...session, id: crypto.randomUUID(), ended_at: null };
+    Object.assign(page, {
+      chrome: {
+        storage: {
+          local: {
+            set: async (data: Record<string, unknown>) => Object.assign(shared, structuredClone(data)),
+            get: async (key: string) => ({ [key]: shared[key] }),
+          },
+        },
+        runtime: {
+          id: "test",
+          onMessage: { addListener: () => {} },
+          sendMessage: async (message: { path?: string; body?: Record<string, unknown> }) => {
+            if (message.path === "/meetings" && message.body) projects.push(String(message.body.project));
+            let result: unknown = live;
+            if (message.path?.startsWith("/meetings?")) result = [live];
+            if (message.path?.startsWith("/suggestions?")) result = { frames: [] };
+            if (message.path?.includes("/context")) result = { hits: [] };
+            return { status: 200, text: JSON.stringify(result) };
+          },
+        },
+      },
+    });
+    page.document.body.innerHTML =
+      '<div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption"></span></div></div>';
+    page.eval(script);
+    const settlePage = async () => {
+      for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+    };
+    await settlePage();
+    const join = async () => {
+      const tile = page.document.createElement("div");
+      tile.setAttribute("data-participant-id", "me");
+      page.document.body.appendChild(tile);
+      clock += 2000;
+      for (const callback of [...ticks.values()]) callback();
+      await settlePage();
+    };
+    return { page, join, settlePage };
+  };
+
+  const first = await openMeet("https://meet.google.com/aaa-aaaa-aaa");
+  try {
+    const input = first.page.document.querySelector("#cluebro-panel .project") as unknown as HTMLInputElement;
+    input.value = "Backend";
+    input.dispatchEvent(new first.page.Event("change") as unknown as Event);
+    await first.settlePage();
+  } finally {
+    await first.page.happyDOM.close();
+  }
+  const second = await openMeet("https://meet.google.com/bbb-bbbb-bbb");
+  try {
+    await second.join();
+    assert.equal(projects.at(-1), "Backend", "a project named in one Meet link is used in the next one");
+  } finally {
+    await second.page.happyDOM.close();
   }
 }
 
@@ -540,5 +624,5 @@ assert.ok(
 clicked!({ id: 11 });
 await flush();
 console.log(
-  "Meeting panel: automatic session, audio handover, no captions with OpenAI audio, caption stability, offline queue, short insights held and deduplicated, recorder toggle and worker restrictions passed.",
+  "Meeting panel: automatic session, project shared across Meet links, audio handover, no captions with OpenAI audio, caption stability, offline queue, short insights held and deduplicated, recorder toggle and worker restrictions passed.",
 );

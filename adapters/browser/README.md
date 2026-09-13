@@ -27,7 +27,10 @@ Requires Node **22.13 or newer** (built-in SQLite) and Chrome/Edge.
 8. Optional, for better transcripts: set `OPENAI_TRANSCRIBE_API_KEY` and click
    the ClueBro toolbar button during the call. See *Call audio* below.
 
-Use the same project name for related meetings, even when their Meet links differ.
+Every meeting goes to the project **general** unless you name another under
+**Project & history**. The name is remembered across Meet links, so meetings on
+different links still share context. Earlier-meeting context only comes from the
+same project: name a separate project to keep unrelated work apart.
 Each new session gets a UUID; reusing a meeting URL does not merge its history.
 An unfinished session can be restored from History and then resumed or finished.
 Reloading a tab restores its session; capture resumes once the call is live again.
