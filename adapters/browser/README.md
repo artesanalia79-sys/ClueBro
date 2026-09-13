@@ -19,7 +19,7 @@ Requires Node **22.13 or newer** (built-in SQLite) and Chrome/Edge.
 4. Run `npm run dev:meet`.
 5. Load `adapters/browser/extension` as an unpacked extension in
    `chrome://extensions` (or reload it if already installed), then reload Meet.
-6. Enable Meet captions and join the call. Saving starts on its own once the
+6. Join the call. Only without `OPENAI_TRANSCRIBE_API_KEY`, enable Meet captions too. Saving starts on its own once the
    call is live and the panel says so; **Start saving** does the same by hand.
 7. Leaving the call closes the session and starts organizing. **Finish &
    organize** does it by hand. Captions are already in SQLite; note extraction
@@ -115,8 +115,9 @@ and the microphone (you, stored as **You**). The transcriber returns no speaker
 labels, so this is the only attribution available. Use headphones: without
 them the microphone also picks up the other participants.
 
-While audio is recorded, Meet captions are not stored, so nothing is saved
-twice. A sentence ends after 700 ms of silence, or after fifteen seconds of
+With the key set, Meet captions are never read: the panel asks for the
+toolbar button instead, and until it is clicked nothing is transcribed. Meet
+captions remain only the fallback for a bridge started without the key. A sentence ends after 700 ms of silence, or after fifteen seconds of
 continuous speech, and is stored about a second later.
 
 ## Caption limitations

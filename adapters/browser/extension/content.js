@@ -51,7 +51,8 @@
     lastContextAt = 0,
     wasInCall = false,
     manualStop = false,
-    audioActive = false;
+    audioActive = false,
+    audioAvailable = false;
   const panel = document.createElement("aside");
   panel.id = "cluebro-panel";
   panel.setAttribute("aria-label", "ClueBro meeting memory");
@@ -84,6 +85,8 @@
   // reload, so the panel has to say that rather than repeat the platform's
   // wording, which reads like a crash.
   const STALE = "ClueBro was updated. Reload this tab to keep saving.";
+  const TOOLBAR_PROMPT =
+    "Saving. Click ClueBro (C) in Chrome's toolbar to transcribe this call's audio with OpenAI.";
   async function request(path, body) {
     let response;
     try {
@@ -179,9 +182,10 @@
     if (text) void enqueue(text, candidate.speaker);
   }
   function scan() {
-    // While the call's audio is recorded, Meet's captions would store every
-    // sentence a second time.
-    if (!recording || audioActive) return;
+    // Meet's captions are the fallback, never a second source: with OpenAI
+    // transcription configured they are worse than the audio, and while the
+    // audio is recorded they would store every sentence twice.
+    if (!recording || audioActive || audioAvailable) return;
     const container = SELECTORS.map((s) => document.querySelector(s)).find(Boolean),
       now = Date.now();
     if (container) {
@@ -366,9 +370,13 @@
       // Say so out loud when nobody pressed the button: the panel being
       // visible is what makes this support rather than a hidden recorder.
       status(
-        automatic
-          ? "Saving started automatically for this call. Turn on Meet captions."
-          : "Saving captions locally. Turn on Meet captions.",
+        audioAvailable
+          ? automatic
+            ? "Saving started automatically. Click ClueBro (C) in Chrome's toolbar to transcribe this call's audio with OpenAI."
+            : TOOLBAR_PROMPT
+          : automatic
+            ? "Saving started automatically for this call. Turn on Meet captions."
+            : "Saving captions locally. Turn on Meet captions.",
       );
     } catch (error) {
       status(error.message);
@@ -445,14 +453,22 @@
     if (message?.type === "cluebro-capture-status") {
       if (message.state === "stopped") {
         audioActive = false;
-        status("Audio recording stopped. Meet captions are saved again while saving.");
+        status(
+          audioAvailable
+            ? "Audio transcription stopped. Click ClueBro (C) in the toolbar to start it again."
+            : "Audio recording stopped. Meet captions are saved again while saving.",
+        );
       } else if (message.state === "mic-denied") {
         status("Microphone blocked: only the other participants are transcribed. Allow it in the tab ClueBro opened.");
       } else if (message.state === "mic-error") {
         status(`Microphone unavailable, only the other participants are transcribed. ${message.detail}`);
       } else if (message.state === "error") {
         audioActive = false;
-        status(`Audio recording failed: ${message.detail}. Meet captions are saved instead.`);
+        status(
+          audioAvailable
+            ? `Audio recording failed: ${message.detail}. Click ClueBro (C) in the toolbar to try again.`
+            : `Audio recording failed: ${message.detail}. Meet captions are saved instead.`,
+        );
       }
       return false;
     }
@@ -530,6 +546,17 @@
       });
     } catch {}
   });
+
+  // Where text comes from is the bridge's decision, not the page's: ask once.
+  void request("/health")
+    .then((health) => {
+      audioAvailable = Boolean(health?.audio);
+      if (!audioAvailable) return;
+      el(".hint").textContent =
+        "Saving starts when you join the call and stops when you leave. To transcribe, click ClueBro (C) in Chrome's toolbar once per call: it records the call's audio and transcribes it with OpenAI. Use the same project to connect meetings.";
+      if (recording && !audioActive) status(TOOLBAR_PROMPT);
+    })
+    .catch(() => {});
 
   setInterval(scan, 500);
   // Context is only useful while the topic is still on the table. The lookup

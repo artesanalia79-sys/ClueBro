@@ -165,6 +165,11 @@ try {
   });
   await bridge.inbound.start!();
   const base = `http://127.0.0.1:${port}`;
+  assert.equal(
+    ((await (await fetch(`${base}/health`)).json()) as { audio?: boolean }).audio,
+    true,
+    "the panel is told a transcriber is configured, so it does not read Meet captions",
+  );
   const post = (path: string, body: unknown, origin?: string) =>
     fetch(base + path, {
       method: "POST",

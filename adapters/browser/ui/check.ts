@@ -291,6 +291,75 @@ try {
   }
 }
 
+// With OpenAI transcription configured, Meet's captions are never the source:
+// they are worse than the audio and would store every sentence a second time.
+{
+  const quiet = new Window({ url: "https://meet.google.com/abc-defg-hij" });
+  let clock = Date.now();
+  const ticks = new Map<number, () => void>();
+  let id = 0;
+  quiet.setInterval = ((callback: () => void) => {
+    ticks.set(++id, callback);
+    return id;
+  }) as unknown as typeof quiet.setInterval;
+  quiet.clearInterval = ((key: number) => {
+    ticks.delete(key);
+  }) as unknown as typeof quiet.clearInterval;
+  quiet.Date.now = () => clock;
+  const stored: unknown[] = [];
+  const store: Record<string, unknown> = {};
+  const live = { ...session, id: "9b2d4c11-7e3a-4f5b-8c6d-1a2b3c4d5e6f", ended_at: null };
+  Object.assign(quiet, {
+    chrome: {
+      storage: {
+        local: {
+          set: async (data: Record<string, unknown>) => Object.assign(store, structuredClone(data)),
+          get: async (key: string) => ({ [key]: store[key] }),
+        },
+      },
+      runtime: {
+        id: "test",
+        onMessage: { addListener: () => {} },
+        sendMessage: async (message: { path?: string; body?: Record<string, unknown> }) => {
+          if (message.path === "/health")
+            return { status: 200, text: JSON.stringify({ ok: true, audio: true }) };
+          if (message.path === "/captions") {
+            stored.push(message.body);
+            return { status: 202, text: "" };
+          }
+          let result: unknown = live;
+          if (message.path?.startsWith("/meetings?")) result = [live];
+          if (message.path?.startsWith("/suggestions?")) result = { frames: [] };
+          if (message.path?.includes("/context")) result = { hits: [] };
+          return { status: 200, text: JSON.stringify(result) };
+        },
+      },
+    },
+  });
+  quiet.document.body.innerHTML =
+    '<div data-participant-id="me"></div><div jsname="dsyhDe"><div data-sender-name="Sam"><span id="caption">A Meet caption that must not be stored.</span></div></div>';
+  quiet.eval(script);
+  const settleQuiet = async () => {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 1));
+  };
+  try {
+    await settleQuiet();
+    for (let i = 0; i < 6; i++) {
+      clock += 1300;
+      for (const callback of [...ticks.values()]) callback();
+      await settleQuiet();
+    }
+    assert.equal(stored.length, 0, "Meet captions are not stored when OpenAI transcription is configured");
+    assert.match(
+      quiet.document.querySelector("#cluebro-panel .state")!.textContent,
+      /toolbar/,
+      "the panel points to the toolbar button, not to Meet captions",
+    );
+  } finally {
+    await quiet.happyDOM.close();
+  }
+}
+
 let listener: (message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean;
 let clicked: ((tab: unknown) => void) | undefined;
 const fetched: string[] = [];
@@ -407,5 +476,5 @@ assert.equal(
   "a tab outside Meet is never recorded",
 );
 console.log(
-  "Meeting panel: automatic session, audio handover, caption stability, offline queue, sources, finish, recorder toggle and worker restrictions passed.",
+  "Meeting panel: automatic session, audio handover, no captions with OpenAI audio, caption stability, offline queue, sources, finish, recorder toggle and worker restrictions passed.",
 );

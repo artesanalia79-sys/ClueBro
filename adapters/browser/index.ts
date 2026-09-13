@@ -205,7 +205,15 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
 
     if (req.method === "GET" && req.url === "/health") {
       res.writeHead(200, { ...CORS, "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, principal: options.principalActorId }));
+      // The panel reads this to decide where text comes from: with a
+      // transcriber configured, Meet's captions are never used.
+      res.end(
+        JSON.stringify({
+          ok: true,
+          principal: options.principalActorId,
+          audio: Boolean(options.transcribe),
+        }),
+      );
       return;
     }
 
