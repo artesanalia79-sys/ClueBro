@@ -481,9 +481,15 @@
   });
 
   setInterval(scan, 500);
+  // Context is only useful while the topic is still on the table. The lookup
+  // is a local full-text query and the bridge reuses an answer until the
+  // matching excerpts change, so asking often costs little and waiting fifteen
+  // seconds made the panel answer after people had moved on.
+  const CONTEXT_EVERY_MS = 4000;
   setInterval(() => {
     void drain();
-    if (!recording || Date.now() - lastContextAt < 15000 || el("#cluebro-query").value) return;
+    if (!recording || Date.now() - lastContextAt < CONTEXT_EVERY_MS || el("#cluebro-query").value)
+      return;
     lastContextAt = Date.now();
     void request(`/meetings/${meeting.id}/context`)
       .then((result) => {
@@ -494,7 +500,9 @@
         }
       })
       .catch(() => {});
-  }, 3000);
+    // Ticks faster than the lookup so the lookup really runs on its own
+    // cadence; drain() returns at once when nothing is waiting to upload.
+  }, 1000);
   void (async () => {
     try {
       const stored = sessionStorage.getItem(SESSION_KEY);
