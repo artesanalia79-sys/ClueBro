@@ -108,10 +108,18 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
   const queue = new AsyncQueue<ContextEvent>();
   const listeners = new Map<ServerResponse, string>();
   const polling = new Map<string, { at: number; frames: unknown[] }>();
-  const contextAnswers = new Map<
-    string,
-    { key: string; synthesis: { answer: string; sources: string[] } | null }
-  >();
+  type ContextAnswer = {
+    synthesis: { answer: string; sources: string[] } | null;
+    quote: string | null;
+    source: string | null;
+  };
+  // Held as a promise so a pushed lookup and a request for the same lines
+  // share one model call instead of racing to make two.
+  const contextAnswers = new Map<string, { key: string; answer: Promise<ContextAnswer> }>();
+  const waiters = new Map<string, Set<() => void>>();
+  const pushed = new Map<string, string>();
+  const runs = new Map<string, { running: boolean; again: boolean }>();
+  const LONG_POLL_MS = 20_000;
   let server: Server | null = null;
   let stopped = false;
 
@@ -143,7 +151,114 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       mentions: [],
       metadata: { caption_offset_ms: payload.offset_ms ?? null },
     } satisfies Record<string, unknown>);
-    if (options.memory.append(event)) queue.push(event);
+    if (options.memory.append(event)) {
+      queue.push(event);
+      scheduleContext(meetingId);
+    }
+  };
+
+  // Earlier-meeting context for what is being said now. Organized notes come
+  // first: they carry the decision, owner and date cleanly, and one whose
+  // heading covers the latest line is shown without a model call at all.
+  const contextFor = async (meetingId: string) => {
+    const meeting = options.memory.get(meetingId);
+    const lines = options.memory
+      .events(meetingId)
+      .slice(-3)
+      .map((e) => e.text);
+    const recent = lines.join(" ");
+    const latest = lines.at(-1) ?? "";
+    const notes = options.memory.searchNotes(meeting.project, recent, meetingId);
+    const captions = options.memory.search(meeting.project, recent, meetingId);
+    const noteExcerpts: MemoryHit[] = notes.map((note) => ({
+      event_id: note.evidence[0]!.event_id,
+      meeting_id: note.meeting_id,
+      label: note.label,
+      occurred_at: note.started_at,
+      speaker: note.owner ?? note.kind,
+      text: `${note.kind}: ${note.title}. ${note.body}`,
+    }));
+    const hits = [
+      ...new Map([...noteExcerpts, ...captions].map((hit) => [hit.event_id, hit])).values(),
+    ].slice(0, 8);
+    if (hits.length === 0) return { hits, context: null };
+    const key = `${latest}|${hits.map((hit) => hit.event_id).join(",")}`;
+    const cached = contextAnswers.get(meetingId);
+    if (cached?.key === key) return { hits, context: await cached.answer };
+    const answer = (async (): Promise<ContextAnswer> => {
+      const direct = options.memory.searchNotes(meeting.project, latest, meetingId)[0];
+      if (direct && direct.kind !== "question" && direct.coverage >= 0.5) {
+        const detail = [direct.owner, direct.due].filter(Boolean).join(" · ");
+        return {
+          synthesis: {
+            answer: detail ? `${direct.title} (${detail})` : direct.title,
+            sources: [direct.evidence[0]!.event_id],
+          },
+          quote: direct.evidence[0]?.quote ?? null,
+          source: `${direct.label} · ${new Date(direct.started_at).toLocaleDateString()}`,
+        };
+      }
+      const synthesis =
+        (await options.answer?.(
+          `This is being discussed right now: "${recent}". What in these earlier meetings is relevant to it?`,
+          hits,
+        )) ?? null;
+      const cited = synthesis ? hits.find((hit) => synthesis.sources.includes(hit.event_id)) : undefined;
+      return {
+        synthesis,
+        quote: cited?.text ?? null,
+        source: cited
+          ? `${cited.speaker} · ${cited.label} · ${new Date(cited.occurred_at).toLocaleDateString()}`
+          : null,
+      };
+    })();
+    contextAnswers.set(meetingId, { key, answer });
+    try {
+      return { hits, context: await answer };
+    } catch (error) {
+      if (contextAnswers.get(meetingId)?.answer === answer) contextAnswers.delete(meetingId);
+      throw error;
+    }
+  };
+
+  const pushFrame = (meetingId: string, frame: Record<string, unknown>) => {
+    const mailbox = polling.get(meetingId) ?? { at: 0, frames: [] };
+    mailbox.frames.push(frame);
+    mailbox.frames = mailbox.frames.slice(-20);
+    polling.set(meetingId, mailbox);
+    for (const wake of waiters.get(meetingId) ?? []) wake();
+  };
+
+  // Runs for every stored line. One lookup per meeting at a time, and lines
+  // that arrive meanwhile trigger exactly one more, so a burst of speech never
+  // queues a model call per sentence.
+  const scheduleContext = (meetingId: string) => {
+    const run = runs.get(meetingId) ?? { running: false, again: false };
+    runs.set(meetingId, run);
+    if (run.running) {
+      run.again = true;
+      return;
+    }
+    run.running = true;
+    void (async () => {
+      try {
+        do {
+          run.again = false;
+          try {
+            const { context } = await contextFor(meetingId);
+            const text = context?.synthesis?.answer;
+            if (text && pushed.get(meetingId) !== text) {
+              pushed.set(meetingId, text);
+              pushFrame(meetingId, { kind: "context", body: text, quote: context.quote, source: context.source });
+            }
+          } catch {
+            // A failed lookup leaves the panel as it was; the next line retries.
+          }
+        } while (run.again && !stopped);
+      } finally {
+        run.running = false;
+      }
+    })();
   };
 
   const audioSockets = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
@@ -290,40 +405,11 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         return;
       }
       if (req.method === "GET" && meetingRoute[2] === "context") {
-        const recent = options.memory
-          .events(id)
-          .slice(-3)
-          .map((e) => e.text)
-          .join(" ");
-        const hits = options.memory.search(meeting.project, recent, id);
-        if (hits.length === 0) {
-          json(res, { hits, synthesis: null });
-          return;
-        }
-        // The panel polls this while people talk. Answering the same set of
-        // excerpts again on every poll would spend a model call per minute to
-        // produce the same paragraph, so the answer is kept until the
-        // excerpts themselves change.
-        const key = hits.map((hit) => hit.event_id).join(",");
-        const cached = contextAnswers.get(id);
-        if (cached?.key === key) {
-          json(res, { hits, synthesis: cached.synthesis });
-          return;
-        }
         try {
-          const synthesis =
-            (await options.answer?.(
-              `This is being discussed right now: "${recent}". What in these earlier meetings is relevant to it?`,
-              hits,
-            )) ?? null;
-          contextAnswers.set(id, { key, synthesis });
-          json(res, { hits, synthesis });
+          const { hits, context } = await contextFor(id);
+          json(res, { hits, synthesis: context?.synthesis ?? null });
         } catch {
-          json(res, {
-            hits,
-            synthesis: null,
-            warning: "Answer unavailable. Original matching sources are shown below.",
-          });
+          json(res, { hits: [], synthesis: null, warning: "Answer unavailable." });
         }
         return;
       }
@@ -338,10 +424,32 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       const meetingId = z.string().uuid().parse(url.searchParams.get("meeting_id"));
       options.memory.get(meetingId);
       if (url.searchParams.get("poll") === "1") {
-        for (const [key, value] of polling) if (Date.now() - value.at > 60000) polling.delete(key);
+        for (const [key, value] of polling)
+          if (Date.now() - value.at > 60000 && !waiters.get(key)?.size) polling.delete(key);
+        const current = polling.get(meetingId);
+        // The panel can only reach the bridge through its service worker, so it
+        // cannot hold a stream open. A long poll does the same job: the request
+        // waits here until something arrives, and the answer reaches the panel
+        // the moment it exists instead of on its next poll.
+        if (url.searchParams.get("wait") === "1" && !current?.frames.length) {
+          polling.set(meetingId, { at: Date.now(), frames: current?.frames ?? [] });
+          await new Promise<void>((resolve) => {
+            const set = waiters.get(meetingId) ?? new Set<() => void>();
+            waiters.set(meetingId, set);
+            const done = () => {
+              clearTimeout(timer);
+              set.delete(done);
+              resolve();
+            };
+            const timer = setTimeout(done, LONG_POLL_MS);
+            set.add(done);
+            res.on("close", done);
+          });
+          if (res.destroyed || res.writableEnded) return;
+        }
         const mailbox = polling.get(meetingId) ?? { at: Date.now(), frames: [] };
-        json(res, { frames: mailbox.frames });
         polling.set(meetingId, { at: Date.now(), frames: [] });
+        json(res, { frames: mailbox.frames });
         return;
       }
       res.writeHead(200, {
@@ -425,6 +533,8 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       for (const res of listeners.keys()) res.end();
       listeners.clear();
       polling.clear();
+      for (const set of waiters.values()) for (const wake of set) wake();
+      waiters.clear();
       for (const client of audioSockets.clients) client.terminate();
       audioSockets.close();
       await new Promise<void>((resolve) => {
@@ -464,7 +574,11 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
         decision.delivery.actor_id === options.principalActorId
           ? polling.get(decision.delivery.surface_id ?? "")
           : undefined;
-      if (recipients.length === 0 && (!mailbox || Date.now() - mailbox.at > 15000)) {
+      const surfaceId = decision.delivery.surface_id ?? "";
+      if (
+        recipients.length === 0 &&
+        (!mailbox || (Date.now() - mailbox.at > LONG_POLL_MS + 5000 && !waiters.get(surfaceId)?.size))
+      ) {
         return makeResult({
           decision,
           status: "failed",
@@ -489,6 +603,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       if (mailbox) {
         mailbox.frames.push(JSON.parse(frame));
         mailbox.frames = mailbox.frames.slice(-20);
+        for (const wake of waiters.get(surfaceId) ?? []) wake();
       }
 
       return makeResult({

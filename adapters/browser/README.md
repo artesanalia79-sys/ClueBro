@@ -75,15 +75,17 @@ The default directory is excluded from Git; exclude a custom directory yourself.
   occurrences stay separate across meetings so a changed date does not erase
   the old agreement. Names are matched exactly within a project; aliases and
   automatic identity merging are not implemented.
-- Search uses SQLite FTS5 with accent-insensitive term matching. It filters by
+- Captions and organized notes are both indexed with SQLite FTS5, accent-insensitive. It filters by
   project and principal. Queries can be natural-language questions, but retrieval
   is lexical, not embeddings: using the same topic words improves recall.
 - With a real model, search results are synthesized into an answer with validated
   source IDs. The original excerpts remain visible. On failure, only excerpts
   are shown. Citation validation does not prove every interpretation is correct.
-- While saving, the panel checks recent captions for matching excerpts from other
-  meetings in the same project every 4 seconds, and shows at most one short
-  answer at a time. A new answer waits until the current one has been on screen
+- Every stored line triggers a lookup in the other meetings of the same project,
+  and the answer is pushed to the panel as soon as it exists, through a long
+  poll, rather than on a timer. Organized notes are searched first; one whose
+  heading covers the latest line is shown directly, without a model call. The
+  panel shows at most one short answer at a time. A new answer waits until the current one has been on screen
   for 12 seconds; the same answer is never shown twice, and the source is folded
   under it. When the model finds nothing relevant, nothing is shown.
 - Closing commits immediately and starts background organization. Extraction
@@ -145,7 +147,7 @@ are stored as **Unknown speaker**, not guessed. Verify selectors on a real call.
 | GET | `/meetings/:id/export` | Generate and download the Markdown transcript |
 | GET | `/meetings/:id/context` | Matching sources from earlier sessions |
 | GET | `/memory/search?project=…&q=…` | Search excerpts and optional AI answer |
-| GET | `/suggestions?meeting_id=…&poll=1` | Private live suggestions, polled by extension |
+| GET | `/suggestions?meeting_id=…&poll=1&wait=1` | Private suggestions and pushed context; with `wait=1` the request is held until one arrives (20 s max) |
 | GET | `/suggestions?meeting_id=…` | SSE alternative for local clients |
 | WS | `/audio?meeting_id=…&speaker=self\|room` | 24 kHz PCM16 in; finished lines stored as captions |
 

@@ -41,14 +41,13 @@
   let meeting = null,
     recording = false,
     pending = [],
-    stream,
+    listening = null,
+    awaitingFrames = false,
     draining = false,
     working = false;
   let saving = Promise.resolve(),
     drainTask = Promise.resolve(),
     candidates = new Map(),
-    lastContext = "",
-    lastContextAt = 0,
     wasInCall = false,
     audioActive = false,
     audioAvailable = false,
@@ -269,20 +268,6 @@
     }
     renderInsight(item);
   }
-  function showContext(result) {
-    // No answer means nothing worth interrupting for. Raw excerpts are not a
-    // substitute: they are exactly the wall of text this panel avoids.
-    if (!result?.synthesis?.answer) return;
-    const cited =
-      result.hits.find((hit) => result.synthesis.sources.includes(hit.event_id)) ?? result.hits[0];
-    addInsight({
-      answer: result.synthesis.answer,
-      quote: cited?.text ?? null,
-      source: cited
-        ? `${cited.speaker} · ${cited.label} · ${new Date(cited.occurred_at).toLocaleString()}`
-        : null,
-    });
-  }
   async function download(id) {
     const markdown = await request(`/meetings/${id}/export`);
     const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown" }));
@@ -356,24 +341,32 @@
     }
   }
   function connect() {
-    if (stream) clearInterval(stream);
-    const id = meeting.id;
-    const poll = async () => {
-      try {
-        const result = await request(`/suggestions?meeting_id=${id}&poll=1`);
+    listening = meeting.id;
+  }
+  // One request at a time, held open by the bridge until something arrives,
+  // and a new one on the next tick. Answers show up as soon as they exist
+  // instead of waiting for a timer.
+  function listen() {
+    if (!listening || !recording || awaitingFrames) return;
+    const id = listening;
+    awaitingFrames = true;
+    void request(`/suggestions?meeting_id=${id}&poll=1&wait=1`)
+      .then((result) => {
         for (const card of result.frames) {
-          addInsight({
-            answer: card.body,
-            quote: null,
-            source: (card.sources || []).map((s) => `${s.label} (${s.ref})`).join(" · ") || null,
-          });
+          if (card.kind === "context")
+            addInsight({ answer: card.body, quote: card.quote ?? null, source: card.source ?? null });
+          else
+            addInsight({
+              answer: card.body,
+              quote: null,
+              source: (card.sources || []).map((s) => `${s.label} (${s.ref})`).join(" · ") || null,
+            });
         }
-      } catch {
-        /* Keep the panel usable if a frame is malformed. */
-      }
-    };
-    void poll();
-    stream = setInterval(poll, 3000);
+      })
+      .catch(() => {})
+      .finally(() => {
+        awaitingFrames = false;
+      });
   }
   async function startSaving(automatic = false) {
     // A session created before the remembered project loads would land in
@@ -397,7 +390,6 @@
         });
         pending = [];
         candidates = new Map();
-        lastContext = "";
       }
       recording = true;
       remember();
@@ -427,7 +419,7 @@
       status("Meeting saved · organizing notes");
       meeting = await request(`/meetings/${meeting.id}/finish`, {});
       remember();
-      clearInterval(stream);
+      listening = null;
       status(meeting.extraction_enabled ? "Meeting saved · organizing notes" : "Meeting saved");
       await history();
     } catch (error) {
@@ -538,27 +530,10 @@
     .catch(() => {});
 
   setInterval(scan, 500);
-  // Context is only useful while the topic is still on the table. The lookup
-  // is a local full-text query and the bridge reuses an answer until the
-  // matching excerpts change, so asking often costs little and waiting fifteen
-  // seconds made the panel answer after people had moved on.
-  const CONTEXT_EVERY_MS = 4000;
   setInterval(() => {
     void drain();
     if (queuedInsight && Date.now() - lastInsightAt >= HOLD_MS) renderInsight(queuedInsight);
-    if (!recording || Date.now() - lastContextAt < CONTEXT_EVERY_MS) return;
-    lastContextAt = Date.now();
-    void request(`/meetings/${meeting.id}/context`)
-      .then((result) => {
-        const key = result.hits.map((h) => h.event_id).join(",");
-        if (key && key !== lastContext) {
-          lastContext = key;
-          showContext(result);
-        }
-      })
-      .catch(() => {});
-    // Ticks faster than the lookup so the lookup really runs on its own
-    // cadence; drain() returns at once when nothing is waiting to upload.
+    listen();
   }, 1000);
   void (async () => {
     try {

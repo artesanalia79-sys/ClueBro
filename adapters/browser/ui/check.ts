@@ -22,6 +22,7 @@ let offline = false;
 let closed = false;
 let contextAnswer: string | null = null;
 let contextKey = "none";
+let deliveredKey = "";
 const session = {
   id: "0a869b4e-5c25-4512-ae04-04a0b708d08e",
   project: "launch",
@@ -57,23 +58,23 @@ Object.assign(window, {
         }
         if (message.path.startsWith("/meetings?"))
           result = [{ ...session, ended_at: closed ? new Date().toISOString() : null }];
-        if (message.path.startsWith("/suggestions?")) result = { frames: [] };
-        if (message.path.includes("/context"))
-          result = contextAnswer
-            ? {
-                hits: [
-                  {
-                    event_id: contextKey,
-                    meeting_id: session.id,
-                    label: "Planning",
-                    occurred_at: session.started_at,
-                    speaker: "Sam",
-                    text: "<script>unsafe()</script> Friday launch",
-                  },
-                ],
-                synthesis: { answer: contextAnswer, sources: [contextKey] },
-              }
-            : { hits: [] };
+        // The bridge pushes context through the suggestions long poll.
+        if (message.path.startsWith("/suggestions?")) {
+          result = { frames: [] };
+          if (contextAnswer && deliveredKey !== contextKey) {
+            deliveredKey = contextKey;
+            result = {
+              frames: [
+                {
+                  kind: "context",
+                  body: contextAnswer,
+                  quote: "<script>unsafe()</script> Friday launch",
+                  source: "Sam · Planning",
+                },
+              ],
+            };
+          }
+        }
         if (message.path.startsWith("/memory/search"))
           result = {
             hits: [

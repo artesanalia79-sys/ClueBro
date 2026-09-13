@@ -71,6 +71,13 @@ try {
   assert.equal(memory.append(original), false, "already committed retries are safe after close");
   memory.append(event(second.id, "two", "Cambiamos el lanzamiento al martes."));
   await memory.finish(second.id);
+  const noteHits = memory.searchNotes("launch", "delivery date");
+  assert.ok(noteHits.length > 0, "organized notes are searchable, not only raw captions");
+  assert.equal(noteHits[0]!.coverage, 1, "and report how much of the query their heading covers");
+  assert.ok(
+    memory.searchNotes("launch", "delivery date", first.id).every((hit) => hit.meeting_id !== first.id),
+    "the current meeting is left out of note search",
+  );
   const files = readdirSync(memory.vault);
   assert.equal(
     files.filter((f) => f.startsWith("Note-")).length,
@@ -253,6 +260,33 @@ try {
   assert.equal(repeat.synthesis?.answer, "Earlier: Friday launch");
   assert.equal(answered, 1, "unchanged excerpts reuse the answer instead of asking again");
 
+  // The answer is pushed the moment a line is stored: a long poll already
+  // waiting on the bridge returns with it, instead of the panel asking later.
+  await fetch(`${base}/suggestions?meeting_id=${session.id}&poll=1`);
+  const waiting = fetch(`${base}/suggestions?meeting_id=${session.id}&poll=1&wait=1`).then(
+    (r) => r.json() as Promise<{ frames: { kind?: string; body?: string }[] }>,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const askedAt = Date.now();
+  assert.equal(
+    (
+      await post("/captions", {
+        meeting_id: session.id,
+        caption_id: "note-trigger",
+        text: "What was the delivery date again?",
+      })
+    ).status,
+    202,
+  );
+  const pushedFrames = await waiting;
+  assert.ok(Date.now() - askedAt < 2000, "the answer arrives with the line, not on a later poll");
+  assert.equal(
+    pushedFrames.frames.find((frame) => frame.kind === "context")?.body,
+    "Delivery date",
+    "an organized note that covers the line is used directly",
+  );
+  assert.equal(answered, 1, "and answering from a note spends no model call");
+
   // Audio from the microphone becomes a caption attributed to the principal,
   // through the same path a typed caption takes.
   const extension = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
@@ -287,7 +321,7 @@ try {
 
   assert.equal((await post(`/meetings/${session.id}/finish`, {})).status, 202);
   console.log(
-    "Meeting memory: persistence, citations, retries, isolation, vault links, automatic context and bridge checks passed.",
+    "Meeting memory: persistence, citations, retries, isolation, vault links, note search, pushed context and bridge checks passed.",
   );
 } finally {
   if (bridge) await bridge.inbound.stop!();
