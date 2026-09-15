@@ -1,14 +1,33 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { createServer } from "node:net";
 import WebSocket from "ws";
 import { ActionDecisionSchema, ContextEventSchema, type ContextEvent } from "@contracts";
 import { MeetingMemory, type ExtractNotes } from "./memory";
+import { PersonalNotesIndex } from "./personal-notes/index";
 import { createBrowserBridge } from "./index";
 
 const root = mkdtempSync(join(tmpdir(), "cluebro-memory-check-"));
+const personalRoot = mkdtempSync(join(tmpdir(), "cluebro-personal-notes-check-"));
+// Deliberately no word shared with any other fixture caption in this file --
+// "through" once collided with an unrelated "durable caption through HTTP"
+// line elsewhere here and fired an extra, uncounted answer() call.
+writeFileSync(
+  join(personalRoot, "expenses.md"),
+  "## Reimbursement policy\nFile expense reports inside Concur within thirty calendar days of a purchase.",
+);
+const personalNotes = new PersonalNotesIndex(personalRoot, join(personalRoot, ".index", "personal-notes.sqlite"));
+personalNotes.scan();
 const fixture = ContextEventSchema.parse(
   JSON.parse(
     readFileSync(
@@ -56,6 +75,16 @@ try {
     0,
     "FTS operators are not interpreted as user syntax",
   );
+  // "for" is common enough in English notes ("scheduled for Thursday") that
+  // treating it as a search term matched almost any note against almost any
+  // sentence containing it — a filler line like "thanks for hopping on" once
+  // pulled up an unrelated meeting purely on that word.
+  memory.append(event(second.id, "for-check", "The launch date is set for the 19th."));
+  assert.equal(
+    memory.search("launch", "Thanks for hopping on today", first.id).length,
+    0,
+    "common English function words like \"for\" are not search terms",
+  );
   await memory.close();
   memory = new MeetingMemory(root, "owner-a", extract);
   assert.equal(
@@ -77,29 +106,48 @@ try {
     memory.searchNotes("launch", "delivery date", first.id).every((hit) => hit.meeting_id !== first.id),
     "the current meeting is left out of note search",
   );
-  const files = readdirSync(memory.vault);
-  assert.equal(
-    files.filter((f) => f.startsWith("Note-")).length,
-    2,
-    "changed decisions retain both occurrences",
+  // Meetings, notes, tasks, people and projects each land in their own
+  // topic folder -- meets/, notes/, tasks/, notes/people/, notes/projects/
+  // -- instead of a flat dump, so the vault reads the same whether a file
+  // came from a meeting export or was written by hand.
+  const walkVault = (dir: string, prefix = ""): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+      entry.isDirectory()
+        ? walkVault(join(dir, entry.name), `${prefix}${entry.name}/`)
+        : [`${prefix}${entry.name}`],
+    );
+  const files = walkVault(memory.vault);
+  const named = (kind: string) => files.filter((f) => f.split("/").pop()!.startsWith(`${kind}-`));
+  assert.ok(
+    named("Note").every((f) => f.startsWith("notes/")),
+    "decisions and facts are exported under notes/",
   );
-  assert.equal(
-    files.filter((f) => f.startsWith("Project-")).length,
-    1,
-    "project entities are reused",
+  assert.equal(named("Note").length, 2, "changed decisions retain both occurrences");
+  assert.ok(
+    named("Project").every((f) => f.startsWith("notes/projects/")),
+    "project entities live under notes/projects/",
   );
-  assert.equal(
-    files.filter((f) => f.startsWith("Person-")).length,
-    1,
-    "people are linked across meetings",
+  assert.equal(named("Project").length, 1, "project entities are reused");
+  assert.ok(
+    named("Person").every((f) => f.startsWith("notes/people/")),
+    "people live under notes/people/",
+  );
+  assert.equal(named("Person").length, 1, "people are linked across meetings");
+  assert.ok(
+    named("Meeting").every((f) => f.startsWith("meets/")),
+    "meetings are exported under meets/",
   );
   const markdown = memory.export(first.id);
   assert.match(markdown, /viernes/);
   assert.match(markdown, /\[\[Note-/);
+  const byName = new Map(files.map((f) => [f.split("/").pop()!, f]));
   for (const file of files.filter((f) => f.endsWith(".md"))) {
     const text = readFileSync(join(memory.vault, file), "utf8");
     for (const match of text.matchAll(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g)) {
-      assert.ok(files.includes(`${match[1]}.md`), `broken vault link: ${match[1]}`);
+      // Obsidian resolves a wikilink by filename anywhere in the vault, not
+      // by the path it was written from -- so a link is broken only if no
+      // file with that name exists at all, regardless of which folder.
+      assert.ok(byName.has(`${match[1]}.md`), `broken vault link: ${match[1]}`);
     }
   }
   other = new MeetingMemory(root, "owner-b");
@@ -160,6 +208,7 @@ try {
     port,
     principalActorId: "owner-a",
     memory,
+    personalNotes,
     // Stands in for the vendor: every chunk of audio becomes one finished line.
     transcribe: ({ onLine }) => ({
       append: (chunk) => onLine(`Heard ${chunk.length} bytes of audio.`),
@@ -169,6 +218,8 @@ try {
       answered++;
       lastExcerpts = hits;
       const now = lines.at(-1) ?? "";
+      if (/reimburse|expense/i.test(now))
+        return { answer: "Submit expenses through Concur within 30 days", sources: [hits[0]!.event_id] };
       return {
         answer: /delivery/i.test(now) ? "Delivery is on Friday" : "Earlier: Friday launch",
         sources: [hits[0]!.event_id],
@@ -310,6 +361,36 @@ try {
     "what is asked now leads the excerpts, not the topic of the line before it",
   );
 
+  // Personal notes are never scoped to a project, unlike meeting notes and
+  // captions: a session in a project that has never seen this topic before
+  // must still find a personal note about it.
+  const unrelatedProject = await post("/meetings", {
+    room: "other-room",
+    label: "Unrelated",
+    project: "totally-unrelated",
+  });
+  const otherSession = (await unrelatedProject.json()) as { id: string };
+  assert.equal(
+    (
+      await post("/captions", {
+        meeting_id: otherSession.id,
+        caption_id: "expense-question",
+        // Plain FTS5 has no stemming, so "expense reports" is chosen to match
+        // the note's wording exactly -- "reimbursed" would not match "Reimbursement".
+        text: "How do I file expense reports for a client dinner?",
+      })
+    ).status,
+    202,
+  );
+  const personalContext = (await (
+    await fetch(`${base}/meetings/${otherSession.id}/context`)
+  ).json()) as { hits: { label: string; text: string }[]; synthesis: { answer: string } | null };
+  assert.ok(
+    personalContext.hits.some((hit) => hit.label === "Personal notes"),
+    "a personal note answers a project that never had a related meeting",
+  );
+  assert.equal(personalContext.synthesis?.answer, "Submit expenses through Concur within 30 days");
+
   // Audio from the microphone becomes a caption attributed to the principal,
   // through the same path a typed caption takes.
   const extension = "chrome-extension://abcdefghijklmnopabcdefghijklmnop";
@@ -342,17 +423,61 @@ try {
   });
   assert.equal(refused, true, "a page that is not the extension cannot stream audio in");
 
+  // With a shared vault, a meeting's own decisions become part of the same
+  // "personal notes" search a live meeting reads from -- and the meeting
+  // being answered must not be able to cite itself.
+  const sharedRoot = mkdtempSync(join(tmpdir(), "cluebro-shared-vault-check-"));
+  let sharedMemory: MeetingMemory | undefined;
+  let sharedNotes: PersonalNotesIndex | undefined;
+  try {
+    sharedMemory = new MeetingMemory(root, "owner-shared", extract, sharedRoot);
+    sharedNotes = new PersonalNotesIndex(sharedRoot, join(sharedRoot, ".index", "personal-notes.sqlite"));
+    const shared = sharedMemory.start("shared-room", "Kickoff", "Merged vault");
+    sharedMemory.append(event(shared.id, "one", "We decided to ship on the 30th."));
+    await sharedMemory.finish(shared.id);
+    sharedNotes.scan();
+    const fromOtherMeeting = sharedNotes.search("decided to ship on the 30th");
+    assert.ok(
+      fromOtherMeeting.some((hit) => hit.path.startsWith(`notes${sep}`)),
+      "a meeting's exported decision is searchable as a personal note once the vaults are shared",
+    );
+    // Excluding by the meeting id keeps its own transcript export out of its
+    // own results -- a synthesized decision note derived from it can still
+    // surface, since recalling an earlier decision from this same meeting is
+    // a legitimate answer, but echoing back the raw line just said is not.
+    const selfExcluded = sharedNotes.search("decided to ship on the 30th", shared.id);
+    assert.ok(
+      selfExcluded.every((hit) => !hit.path.startsWith(`meets${sep}`)),
+      "a meeting must not cite its own just-exported transcript",
+    );
+  } finally {
+    await sharedMemory?.close();
+    await sharedNotes?.close();
+    rmSync(sharedRoot, { recursive: true, force: true });
+  }
+
   assert.equal((await post(`/meetings/${session.id}/finish`, {})).status, 202);
   console.log(
-    "Meeting memory: persistence, citations, retries, isolation, vault links, note search, pushed context and bridge checks passed.",
+    "Meeting memory: persistence, citations, retries, isolation, vault links, note search, pushed context, personal notes and bridge checks passed.",
   );
 } finally {
+  // bridge.inbound.stop() already closes personalNotes when a bridge exists;
+  // this only covers the case where something threw before it was created.
   if (bridge) await bridge.inbound.stop!();
-  else await memory.close();
+  else {
+    await memory.close();
+    await personalNotes.close();
+  }
   await other?.close();
   const resolved = realpathSync(root);
   assert.ok(
     resolved.startsWith(realpathSync(tmpdir()) + sep) && resolved.includes("cluebro-memory-check-"),
   );
   rmSync(resolved, { recursive: true, force: true });
+  const resolvedPersonal = realpathSync(personalRoot);
+  assert.ok(
+    resolvedPersonal.startsWith(realpathSync(tmpdir()) + sep) &&
+      resolvedPersonal.includes("cluebro-personal-notes-check-"),
+  );
+  rmSync(resolvedPersonal, { recursive: true, force: true });
 }

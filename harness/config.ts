@@ -40,6 +40,11 @@ export interface AppConfig {
       languages: string[];
       delay: string;
     };
+    /** A folder of Markdown notes -- an Obsidian vault works as-is -- indexed
+     *  and watched for changes. Searched alongside meeting memory, but never
+     *  scoped to a project: it is the user's own knowledge, not a meeting's.
+     *  Empty disables the feature entirely. */
+    personalNotesDir: string;
   };
 
   policy: {
@@ -122,6 +127,7 @@ export function loadConfig(overrides: ConfigOverrides = {}): AppConfig {
         languages: list("TRANSCRIBE_LANGUAGES").length ? list("TRANSCRIBE_LANGUAGES") : ["es"],
         delay: str("TRANSCRIBE_DELAY", "low"),
       },
+      personalNotesDir: str("PERSONAL_NOTES_DIR"),
     },
 
     policy: {

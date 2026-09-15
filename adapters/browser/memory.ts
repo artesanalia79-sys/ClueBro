@@ -52,13 +52,49 @@ export interface NoteHit {
   evidence: MemoryNote["evidence"];
 }
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 24);
+/** Re-exported so callers that colocate other per-principal state (personal
+ *  notes) land in the same folder without duplicating this derivation. */
+export const principalHash = hash;
 const clean = (s: string) => s.replace(/([\\`*_{}\[\]<>#|])/g, "\\$1").replace(/[\r\n]+/g, " ");
+// A tag, not a caption: kebab-cased so "Q4 Launch" and "q4-launch" collide on
+// purpose, and short enough that a long free-text project name does not turn
+// into an unreadable frontmatter line.
+const slug = (s: string): string =>
+  s
+    .toLocaleLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+// A note's body grows every time a later meeting adds to the same decision.
+// Nothing here calls that growth back in: kept unbounded, a long-running
+// project's most-discussed decision becomes the single largest excerpt every
+// search returns, crowding out everything else a live meeting is shown.
+const MAX_BODY_CHARS = 4000;
 const words = (s: string) => [...new Set(s.toLocaleLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
+// "for" was the gap that mattered: it is 3+ letters, so it passed the length
+// floor, and it is common enough in English notes ("scheduled for Thursday",
+// "budget for the launch") that almost any sentence containing it matched
+// almost any note. A short filler line ("thanks for hopping on") pulled up an
+// unrelated meeting purely on that word.
 const STOP = new Set(
-  "the and that this what when where with from have was were about does did how para que qué como cómo cuándo donde dónde una los las del con por sobre hemos acordamos dijo reunión meeting".split(
+  "the and that this what when where with from have has had was were about does did how for not but are will can get got out its our your you who all just para que qué como cómo cuándo donde dónde una los las del con por sobre hemos acordamos dijo reunión meeting".split(
     " ",
   ),
 );
+
+/**
+ * The single tokenizer for every full-text search in this file, and for the
+ * personal-notes index that searches alongside it. A stopword missing here
+ * once made "for" match almost any English note against almost any sentence
+ * containing it -- a bug that would have had to be found and fixed twice if
+ * each search kept its own copy of this list.
+ */
+export const searchTerms = (query: string): string[] =>
+  words(query)
+    .filter((w) => !STOP.has(w))
+    .slice(0, 16);
 
 /** SQLite is the durable source; Markdown is a portable, regenerable projection. */
 export class MeetingMemory {
@@ -71,9 +107,20 @@ export class MeetingMemory {
     root: string,
     private owner: string,
     private extract?: ExtractNotes,
+    // A folder already shared with personal notes -- an Obsidian vault --
+    // so meetings, decisions and tasks land as topics inside the same
+    // second brain instead of a private export nothing else ever sees.
+    // Omitted, this falls back to a vault nested inside `root`, exactly as
+    // before: the merge is opt-in, not a breaking change to the layout.
+    vaultRoot?: string,
   ) {
     const folder = join(root, hash(owner));
-    this.vault = join(folder, "vault");
+    this.vault = vaultRoot ?? join(folder, "vault");
+    // The database always lives under `folder`, whether or not the vault
+    // was redirected into a shared one: SQLite is the durable source and it
+    // stays private per principal even when the Markdown projection is
+    // shared.
+    mkdirSync(folder, { recursive: true });
     mkdirSync(this.vault, { recursive: true });
     this.db = new DatabaseSync(join(folder, "memory.sqlite"));
     this.db.exec(`
@@ -186,9 +233,7 @@ export class MeetingMemory {
   }
 
   search(project: string, query: string, excludeMeeting = ""): MemoryHit[] {
-    const tokens = words(query)
-      .filter((w) => !STOP.has(w))
-      .slice(0, 16);
+    const tokens = searchTerms(query);
     if (!tokens.length) return [];
     const expression = tokens.map((w) => `"${w}"`).join(" OR ");
     return this.db
@@ -208,9 +253,7 @@ export class MeetingMemory {
   // Organized notes carry the decision, owner and date cleanly, so they are
   // searched as well as the raw captions they were drawn from.
   searchNotes(project: string, query: string, excludeMeeting = ""): NoteHit[] {
-    const tokens = words(query)
-      .filter((w) => !STOP.has(w))
-      .slice(0, 16);
+    const tokens = searchTerms(query);
     if (!tokens.length) return [];
     const rows = this.db
       .prepare(
@@ -306,7 +349,11 @@ export class MeetingMemory {
                 [...old.evidence, ...note.evidence].map((e) => [`${e.event_id}:${e.quote}`, e]),
               ).values(),
             ];
-            note.body = `${old.body}\n\n${note.body}`;
+            // Kept to the tail: the newest word on a recurring decision is
+            // the one a live meeting needs, and an unbounded merge would
+            // otherwise let one long-running topic outgrow every excerpt
+            // slot a search has to offer.
+            note.body = `${old.body}\n\n${note.body}`.slice(-MAX_BODY_CHARS);
           }
           this.db
             .prepare("INSERT OR REPLACE INTO notes VALUES(?,?,?)")
@@ -325,8 +372,14 @@ export class MeetingMemory {
     return this.get(id);
   }
 
-  private write(name: string, content: string) {
-    const target = join(this.vault, `${name}.md`);
+  // Where a note lands is the only thing "topic" means here: a folder, not a
+  // hardcoded keyword. A commitment is a task because someone owes it, not
+  // because of a magic word in its title; the same fact could as easily have
+  // been a demo trigger phrase, and it would still just be a fact.
+  private write(folder: string, name: string, content: string) {
+    const dir = join(this.vault, folder);
+    mkdirSync(dir, { recursive: true });
+    const target = join(dir, `${name}.md`);
     writeFileSync(`${target}.tmp`, content, "utf8");
     renameSync(`${target}.tmp`, target);
   }
@@ -334,12 +387,19 @@ export class MeetingMemory {
   export(id: string): string {
     const meeting = this.get(id);
     const events = this.events(id);
+    const projectSlug = slug(meeting.project) || "untagged";
     const projectName = `Project-${hash(meeting.project)}`;
     const notes = this.db
       .prepare("SELECT id,payload FROM notes WHERE meeting_id=? ORDER BY id")
       .all(id);
     const people = [...new Set(events.map((e) => e.actor.display_name))];
     const personName = (person: string) => `Person-${hash(`${meeting.project}:${person}`)}`;
+    // Every kind, owner and project the extractor already produced becomes a
+    // tag for free: none of it is a word picked to make a demo fire, so the
+    // same mechanism groups any project or owner a user ever types, not just
+    // the ones rehearsed in advance.
+    const tagLine = (...tags: (string | null | undefined)[]) =>
+      `tags: [${[...new Set(tags.filter((t): t is string => Boolean(t)))].map((t) => JSON.stringify(t)).join(", ")}]`;
     const lines = [
       "---",
       "type: meeting",
@@ -347,6 +407,7 @@ export class MeetingMemory {
       `project: ${JSON.stringify(meeting.project)}`,
       `started: ${JSON.stringify(meeting.started_at)}`,
       `ended: ${JSON.stringify(meeting.ended_at)}`,
+      tagLine("meeting", projectSlug),
       "---",
       "",
       `# ${clean(meeting.label)}`,
@@ -360,15 +421,21 @@ export class MeetingMemory {
     ];
     for (const row of notes) {
       const note = JSON.parse(String(row.payload)) as MemoryNote;
-      const name = `Note-${row.id}`;
+      // A commitment is a task -- someone owes it -- everything else is a
+      // note. The folder is derived from the same `kind` the extractor
+      // already assigns, not a second, separately-hardcoded classification.
+      const folder = note.kind === "commitment" ? "tasks" : "notes";
+      const name = `${note.kind === "commitment" ? "Task" : "Note"}-${row.id}`;
       lines.push(`- [[${name}|${clean(note.title)}]]`);
       this.write(
+        folder,
         name,
         [
           "---",
           `type: ${note.kind}`,
           `owner: ${JSON.stringify(note.owner)}`,
           `due: ${JSON.stringify(note.due)}`,
+          tagLine(note.kind, projectSlug, note.owner && slug(note.owner)),
           "---",
           "",
           `# ${clean(note.title)}`,
@@ -402,13 +469,21 @@ export class MeetingMemory {
         "",
       );
     const markdown = lines.join("\n");
-    this.write(`Meeting-${id}`, markdown);
+    this.write("meets", `Meeting-${id}`, markdown);
     const related = this.list(meeting.project);
     this.write(
+      "notes/projects",
       projectName,
-      `# ${clean(meeting.project)}\n\n` +
-        related.map((m) => `- [[Meeting-${m.id}|${clean(m.label)}]] · ${m.started_at}`).join("\n") +
-        "\n",
+      [
+        "---",
+        tagLine("project", projectSlug),
+        "---",
+        "",
+        `# ${clean(meeting.project)}`,
+        "",
+        related.map((m) => `- [[Meeting-${m.id}|${clean(m.label)}]] · ${m.started_at}`).join("\n"),
+        "",
+      ].join("\n"),
     );
     for (const person of people) {
       const rows = this.db
@@ -417,12 +492,22 @@ export class MeetingMemory {
         )
         .all(meeting.project, person);
       this.write(
+        "notes/people",
         personName(person),
-        `# ${clean(person)}\n\nProject: [[${projectName}|${clean(meeting.project)}]]\n\n` +
+        [
+          "---",
+          tagLine("person", projectSlug),
+          "---",
+          "",
+          `# ${clean(person)}`,
+          "",
+          `Project: [[${projectName}|${clean(meeting.project)}]]`,
+          "",
           rows
             .map((m) => `- [[Meeting-${m.id}|${clean(String(m.label))}]] · ${m.started_at}`)
-            .join("\n") +
-          "\n",
+            .join("\n"),
+          "",
+        ].join("\n"),
       );
     }
     return markdown;
