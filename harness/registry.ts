@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { createActionEngine } from "@core/action/index";
 import { createDetector } from "@core/detection/index";
 import { createConsoleOutbound, createReplayInbound } from "@adapters/replay/index";
@@ -80,16 +81,40 @@ async function buildAdapters(
 
     case "browser": {
       const { createBrowserBridge } = await import("@adapters/browser/index");
-      const { MeetingMemory } = await import("@adapters/browser/memory");
+      const { MeetingMemory, principalHash } = await import("@adapters/browser/memory");
       const { createMeetingExtractor, createMeetingAnswerer } = await import("./meeting-memory");
+      const principalId = config.browser.principalActorId ?? "principal";
+
+      let personalNotes: import("@adapters/browser/personal-notes/index").PersonalNotesIndex | undefined;
+      if (config.browser.personalNotesDir) {
+        const { PersonalNotesIndex } = await import("@adapters/browser/personal-notes/index");
+        personalNotes = new PersonalNotesIndex(
+          config.browser.personalNotesDir,
+          join(config.browser.memoryDir, principalHash(principalId), "personal-notes.sqlite"),
+        );
+        const chunks = personalNotes.scan();
+        log.info(`personal notes: indexed ${chunks} chunk(s)`, { dir: config.browser.personalNotesDir });
+        try {
+          personalNotes.watch((path) => log.info(`personal notes: reindexed ${path}`));
+        } catch (error) {
+          log.warn((error as Error).message);
+        }
+      }
+
       const bridge = createBrowserBridge({
         port: config.browser.port,
-        principalActorId: config.browser.principalActorId ?? "principal",
+        principalActorId: principalId,
+        // With a personal notes folder configured, meetings, decisions and
+        // tasks export straight into it -- as meets/, notes/ and tasks/ --
+        // instead of a private vault nothing else ever searches. Without
+        // one, the layout is exactly what it was before this existed.
         memory: new MeetingMemory(
           config.browser.memoryDir,
-          config.browser.principalActorId ?? "principal",
+          principalId,
           createMeetingExtractor(llm),
+          config.browser.personalNotesDir || undefined,
         ),
+        ...(personalNotes ? { personalNotes } : {}),
         // The meeting language, not the language of whichever note or loanword
         // the model happens to read first.
         answer: createMeetingAnswerer(llm, {
@@ -108,6 +133,7 @@ async function buildAdapters(
         audio: config.browser.transcription.apiKey
           ? `${config.browser.transcription.model} (${config.browser.transcription.languages.join(",")})`
           : "off, using Meet captions",
+        personal_notes: config.browser.personalNotesDir || "off",
       });
       return {
         inbound: bridge.inbound,

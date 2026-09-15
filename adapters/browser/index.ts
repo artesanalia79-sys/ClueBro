@@ -13,6 +13,7 @@ import { AsyncQueue } from "../shared/queue";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { MeetingMemory, MemoryHit } from "./memory";
+import type { PersonalNoteHit, PersonalNotesIndex } from "./personal-notes/index";
 
 /**
  * Stage 2 adapter: a browser extension feeding the same agent.
@@ -32,6 +33,9 @@ export interface BrowserBridgeOptions {
   /** The person the agent is supporting. Suggestions go only to them. */
   principalActorId: string;
   memory: MeetingMemory;
+  /** A second, global knowledge source -- an Obsidian vault works as-is --
+   *  searched alongside meeting memory but never scoped to a project. */
+  personalNotes?: PersonalNotesIndex;
   /** The last lines said, oldest first; the final one is what gets answered. */
   answer?: (
     lines: string[],
@@ -171,18 +175,42 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
     // The latest line is searched first, and the lines before it only fill
     // the rest. Searched as one blob, an earlier topic filled every slot: a
     // question about the AI provider came back with nothing but spike notes.
+    // The live answer is an 18-word glance, not a report: it never needs a
+    // full 4000-character chunk or a note whose body has absorbed a dozen
+    // meetings' worth of merges. Uncapped, a handful of large excerpts is
+    // enough text per spoken line to slow the model down and drown the one
+    // fact that mattered in the rest -- the actual shape of "context too
+    // big," not the count of hits, which was already bounded.
+    const MAX_EXCERPT_CHARS = 500;
+    const trim = (text: string) =>
+      text.length > MAX_EXCERPT_CHARS ? `${text.slice(0, MAX_EXCERPT_CHARS)}…` : text;
     const asExcerpt = (note: ReturnType<typeof options.memory.searchNotes>[number]): MemoryHit => ({
       event_id: note.evidence[0]!.event_id,
       meeting_id: note.meeting_id,
       label: note.label,
       occurred_at: note.started_at,
       speaker: note.owner ?? note.kind,
-      text: `${note.kind}: ${note.title}. ${note.body}`,
+      text: trim(`${note.kind}: ${note.title}. ${note.body}`),
+    });
+    // Personal notes are never scoped to a project -- they are the user's own
+    // knowledge, not a meeting's -- so they are searched once, not per
+    // project, and folded in with a synthetic id: nothing else in memory ever
+    // collides with a file path. Once meetings export into the same shared
+    // vault, this note's own meeting is excluded, or it would cite itself.
+    const asPersonal = (hit: PersonalNoteHit): MemoryHit => ({
+      event_id: `personal:${hit.path}`,
+      meeting_id: "",
+      label: "Personal notes",
+      occurred_at: hit.updatedAt,
+      speaker: hit.path,
+      text: trim(`${hit.title}: ${hit.text}`),
     });
     const candidates = [
       ...options.memory.searchNotes(meeting.project, latest, meetingId).map(asExcerpt),
+      ...(options.personalNotes?.search(latest, meetingId).map(asPersonal) ?? []),
       ...options.memory.search(meeting.project, latest, meetingId),
       ...options.memory.searchNotes(meeting.project, recent, meetingId).map(asExcerpt),
+      ...(options.personalNotes?.search(recent, meetingId).map(asPersonal) ?? []),
       ...options.memory.search(meeting.project, recent, meetingId),
     ];
     // A note's evidence is often one of the caption hits too. The first entry
@@ -549,6 +577,7 @@ export function createBrowserBridge(options: BrowserBridgeOptions): BrowserBridg
       waiters.clear();
       for (const client of audioSockets.clients) client.terminate();
       audioSockets.close();
+      options.personalNotes?.close();
       await new Promise<void>((resolve) => {
         if (!server) return resolve();
         server.close(() => resolve());
