@@ -82,7 +82,9 @@ async function buildAdapters(
     case "browser": {
       const { createBrowserBridge } = await import("@adapters/browser/index");
       const { MeetingMemory, principalHash } = await import("@adapters/browser/memory");
-      const { createMeetingExtractor, createMeetingAnswerer } = await import("./meeting-memory");
+      const { createMeetingExtractor, createMeetingAnswerer, createMeetingTitler } = await import(
+        "./meeting-memory"
+      );
       const principalId = config.browser.principalActorId ?? "principal";
 
       let personalNotes: import("@adapters/browser/personal-notes/index").PersonalNotesIndex | undefined;
@@ -113,6 +115,7 @@ async function buildAdapters(
           principalId,
           createMeetingExtractor(llm),
           config.browser.personalNotesDir || undefined,
+          createMeetingTitler(llm),
         ),
         ...(personalNotes ? { personalNotes } : {}),
         // The meeting language, not the language of whichever note or loanword

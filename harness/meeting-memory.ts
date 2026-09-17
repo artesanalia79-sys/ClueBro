@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import type { LlmClient } from "@contracts";
+import type { ContextEvent, LlmClient } from "@contracts";
 import { NoteSchema, type ExtractNotes, type MemoryHit } from "@adapters/browser/memory";
 
 // The LLM client reports a failed call as {"error": ...} so callers can fall
@@ -56,6 +56,34 @@ export function createMeetingAnswerer(llm: LlmClient, options: { language: strin
     // would swallow while the panel stayed empty.
     if (sources.length === 0) return null;
     return { answer: parsed.answer, sources: [...new Set(sources)] };
+  };
+}
+
+/**
+ * A short, specific title for the vault filename -- "Meet 2026-09-17.md" is
+ * what every untitled Google Meet call is named by default, and it tells a
+ * person scanning their vault nothing about which one it was. Independent of
+ * note extraction: even in transcript-only mode, a meeting is still worth
+ * naming for what it was about.
+ */
+export function createMeetingTitler(llm: LlmClient): ((events: ContextEvent[]) => Promise<string>) | undefined {
+  if (llm.name === "fake") return undefined;
+  const system = readFileSync(new URL("../prompts/memory/title.v1.md", import.meta.url), "utf8");
+  return async (events) => {
+    // The gist is in how a meeting opens and where it lands, not in every
+    // line between -- capped so a long meeting still costs one small call.
+    const excerpt = events
+      .slice(0, 40)
+      .map((e) => ({ speaker: e.actor.display_name, text: e.text.slice(0, 400) }));
+    const response = await llm.complete({
+      system,
+      user: JSON.stringify(excerpt),
+      json: true,
+      promptId: "memory.title",
+      temperature: 0,
+      maxTokens: 60,
+    });
+    return z.object({ title: z.string().trim().min(1).max(80) }).parse(parseModelJson(response.text)).title;
   };
 }
 

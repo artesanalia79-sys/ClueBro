@@ -457,6 +457,45 @@ try {
     rmSync(sharedRoot, { recursive: true, force: true });
   }
 
+  // A generated title replaces a generic room label ("Meet") as the vault
+  // filename once one is available, and the file exported under the old
+  // label before that must not linger alongside it.
+  const titledRoot = mkdtempSync(join(tmpdir(), "cluebro-titled-check-"));
+  let titledMemory: MeetingMemory | undefined;
+  try {
+    titledMemory = new MeetingMemory(root, "owner-titled", undefined, titledRoot, async () => "Renewal pricing");
+    const titled = titledMemory.start("titled-room", "Meet", "titling");
+    titledMemory.append(event(titled.id, "one", "Let's lock in the renewal price."));
+    await titledMemory.finish(titled.id);
+    assert.equal(titledMemory.get(titled.id).topic, "Renewal pricing", "the generated topic is stored");
+    const meetFiles = readdirSync(join(titledRoot, "meets"));
+    assert.deepEqual(
+      meetFiles,
+      [`Renewal pricing ${titled.started_at.slice(0, 10)}.md`],
+      "the file exported under the generic label is gone, replaced by the one named after the topic",
+    );
+    const failingTitler = new MeetingMemory(root, "owner-titled-fail", undefined, titledRoot, async () => {
+      throw new Error("model unavailable");
+    });
+    const untitled = failingTitler.start("titled-room-2", "Meet", "titling");
+    failingTitler.append(event(untitled.id, "a", "Some line."));
+    await failingTitler.finish(untitled.id);
+    assert.equal(
+      failingTitler.get(untitled.id).topic,
+      null,
+      "a titler failure leaves the topic unset rather than failing the meeting",
+    );
+    assert.equal(
+      failingTitler.get(untitled.id).processing_error,
+      null,
+      "a titling failure is not reported as a note-organizing error",
+    );
+    await failingTitler.close();
+  } finally {
+    await titledMemory?.close();
+    rmSync(titledRoot, { recursive: true, force: true });
+  }
+
   assert.equal((await post(`/meetings/${session.id}/finish`, {})).status, 202);
   console.log(
     "Meeting memory: persistence, citations, retries, isolation, vault links, note search, pushed context, personal notes and bridge checks passed.",
