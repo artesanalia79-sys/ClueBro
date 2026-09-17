@@ -26,7 +26,13 @@ try {
   mkdirSync(join(root, "sub"));
   writeFileSync(
     join(root, "sub", "clients.md"),
-    "# Acme Corp\nAcme's main contact is Priya, on the platform team. Tracked under #acme-project.",
+    [
+      "---",
+      'id: "client-acme"',
+      "---",
+      "# Acme Corp",
+      "Acme's main contact is Priya, on the platform team. Tracked under #acme-project.",
+    ].join("\n"),
   );
   writeFileSync(join(root, ".obsidian-config.md"), "should never be indexed");
   mkdirSync(join(root, ".obsidian"));
@@ -80,12 +86,14 @@ try {
   assert.equal(platform[0]!.title, "Onboarding", "a note tagged with the query term ranks above one that only mentions it");
 
   // Once meetings export into the same vault as personal notes, a live
-  // meeting must not be able to cite its own just-written markdown.
+  // meeting must not be able to cite its own just-written markdown. The
+  // filename is a readable title now, not an id, so exclusion is matched
+  // against the frontmatter `id:` a file declares for itself.
   assert.ok(nested.some((hit) => hit.path === join("sub", "clients.md")), "sanity: the query matches the file first");
-  const excluded = index.search("Acme main contact platform team", join("sub", "clients"));
+  const excluded = index.search("Acme main contact platform team", "client-acme");
   assert.ok(
     excluded.every((hit) => hit.path !== join("sub", "clients.md")),
-    "a path substring can be excluded from its own search results",
+    "a declared frontmatter id can be excluded from its own search results",
   );
 
   // Editing a file must replace its chunks, not accumulate duplicates or keep stale content.

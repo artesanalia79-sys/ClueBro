@@ -70,6 +70,24 @@ function extractTags(rawContent: string): string[] {
 }
 
 /**
+ * A note's own identity, if it declares one (`id: "..."` in frontmatter, the
+ * way exported meetings, decisions and tasks do). Filenames are readable
+ * titles now, not ids, so self-exclusion can no longer rely on a path
+ * containing a UUID -- it has to compare the identity a file claims for
+ * itself, wherever it happens to be named or filed.
+ */
+function extractId(rawContent: string): string {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(rawContent)?.[1] ?? "";
+  const match = /^id:\s*(".*")\s*$/m.exec(frontmatter);
+  if (!match) return "";
+  try {
+    return JSON.parse(match[1]!) as string;
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Splits a note at its headings, so a search on one topic in a long personal
  * note returns that section, not the whole file. A note with no headings, or
  * text before the first one, becomes one chunk titled after the file.
@@ -113,9 +131,10 @@ export class PersonalNotesIndex {
       PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS chunks (
         id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL,
-        tags TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL
+        tags TEXT NOT NULL DEFAULT '[]', source_id TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS chunks_path ON chunks(path);
+      CREATE INDEX IF NOT EXISTS chunks_source_id ON chunks(source_id);
       -- Weighted so a query word that is also this note's topic (a tag, or
       -- its own heading) wins over the same word merely appearing in the
       -- body -- the versatile replacement for matching on hardcoded
@@ -148,13 +167,14 @@ export class PersonalNotesIndex {
     const tags = extractTags(content);
     const tagsJson = JSON.stringify(tags);
     const tagsText = tags.join(" ");
+    const sourceId = extractId(content);
     this.db.exec("BEGIN IMMEDIATE");
     try {
       pieces.forEach((piece, i) => {
         const id = hashId(`${rel}#${i}`);
         this.db
-          .prepare("INSERT OR REPLACE INTO chunks VALUES(?,?,?,?,?,?)")
-          .run(id, rel, piece.title, piece.text, tagsJson, updatedAt);
+          .prepare("INSERT OR REPLACE INTO chunks VALUES(?,?,?,?,?,?,?)")
+          .run(id, rel, piece.title, piece.text, tagsJson, sourceId, updatedAt);
         this.db
           .prepare("INSERT INTO chunk_search(chunk_id,title,tags,text) VALUES(?,?,?,?)")
           .run(id, piece.title, tagsText, piece.text);
@@ -187,25 +207,27 @@ export class PersonalNotesIndex {
   }
 
   /**
-   * `excludePathContains` keeps a live meeting from citing its own
-   * just-exported markdown: once meetings and personal notes share a vault,
-   * a note about the meeting being answered is otherwise a perfect,
-   * self-referential match for whatever was just said in it.
+   * `excludeSourceId` keeps a live meeting from citing its own just-exported
+   * markdown: once meetings and personal notes share a vault, a note about
+   * the meeting being answered is otherwise a perfect, self-referential
+   * match for whatever was just said in it. Matched against the frontmatter
+   * `id:` a file declares for itself, not its path or filename -- a
+   * readable title like "Kickoff 2026-09-16.md" carries no id of its own.
    */
-  search(query: string, excludePathContains?: string): PersonalNoteHit[] {
+  search(query: string, excludeSourceId?: string): PersonalNoteHit[] {
     const tokens = searchTerms(query);
     if (!tokens.length) return [];
     const rows = this.db
       .prepare(
         `SELECT c.path, c.title, c.text, c.tags, c.updated_at AS updatedAt
        FROM chunk_search s JOIN chunks c ON c.id = s.chunk_id
-       WHERE chunk_search MATCH ? AND (? = '' OR c.path NOT LIKE '%' || ? || '%')
+       WHERE chunk_search MATCH ? AND (? = '' OR c.source_id <> ?)
        ORDER BY bm25(chunk_search, 5.0, 8.0, 1.0) LIMIT 8`,
       )
       .all(
         tokens.map((w) => `"${w}"`).join(" OR "),
-        excludePathContains ?? "",
-        excludePathContains ?? "",
+        excludeSourceId ?? "",
+        excludeSourceId ?? "",
       ) as { path: string; title: string; text: string; tags: string; updatedAt: string }[];
     return rows.map((row) => ({ ...row, tags: JSON.parse(row.tags) as string[] }));
   }

@@ -116,30 +116,31 @@ try {
         ? walkVault(join(dir, entry.name), `${prefix}${entry.name}/`)
         : [`${prefix}${entry.name}`],
     );
+  // Files are named by title and date now ("Delivery date 2026-09-16.md"),
+  // not by a hash or a UUID -- illegible in the file explorer is exactly
+  // what this replaces. Classification uses the folder, not a filename
+  // prefix, since a title carries no prefix of its own.
   const files = walkVault(memory.vault);
-  const named = (kind: string) => files.filter((f) => f.split("/").pop()!.startsWith(`${kind}-`));
-  assert.ok(
-    named("Note").every((f) => f.startsWith("notes/")),
-    "decisions and facts are exported under notes/",
+  const inFolder = (prefix: string) => files.filter((f) => f.startsWith(prefix));
+  const noteFiles = inFolder("notes/").filter(
+    (f) => !f.startsWith("notes/people/") && !f.startsWith("notes/projects/"),
   );
-  assert.equal(named("Note").length, 2, "changed decisions retain both occurrences");
+  assert.equal(noteFiles.length, 2, "changed decisions retain both occurrences, filed under notes/");
   assert.ok(
-    named("Project").every((f) => f.startsWith("notes/projects/")),
-    "project entities live under notes/projects/",
+    noteFiles.every((f) => /Delivery date 20\d{2}-\d{2}-\d{2}/.test(f)),
+    "a note's filename is its title and the meeting's date, not an id",
   );
-  assert.equal(named("Project").length, 1, "project entities are reused");
-  assert.ok(
-    named("Person").every((f) => f.startsWith("notes/people/")),
-    "people live under notes/people/",
+  assert.notEqual(
+    noteFiles[0],
+    noteFiles[1],
+    "two decisions with the same title on the same day are disambiguated, not overwritten",
   );
-  assert.equal(named("Person").length, 1, "people are linked across meetings");
-  assert.ok(
-    named("Meeting").every((f) => f.startsWith("meets/")),
-    "meetings are exported under meets/",
-  );
+  assert.equal(inFolder("notes/projects/").length, 1, "project entities live under notes/projects/, reused");
+  assert.equal(inFolder("notes/people/").length, 1, "people live under notes/people/, linked across meetings");
+  assert.ok(inFolder("meets/").length >= 2, "meetings are exported under meets/");
   const markdown = memory.export(first.id);
   assert.match(markdown, /viernes/);
-  assert.match(markdown, /\[\[Note-/);
+  assert.match(markdown, /\[\[Delivery date/);
   const byName = new Map(files.map((f) => [f.split("/").pop()!, f]));
   for (const file of files.filter((f) => f.endsWith(".md"))) {
     const text = readFileSync(join(memory.vault, file), "utf8");
