@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { PersonalNotesIndex } from "./index";
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), "cluebro-personal-notes-check-")));
@@ -117,6 +118,24 @@ try {
 
   await index.close();
   index = undefined;
+
+  // A database left over from before `tags` or `source_id` existed must not
+  // crash the bridge on startup: this cache is rebuildable, so the fix is to
+  // drop and let scan() repopulate it, not a schema nobody migrated.
+  const staleRoot = mkdtempSync(join(tmpdir(), "cluebro-personal-notes-stale-"));
+  const staleDbPath = join(staleRoot, "personal-notes.sqlite");
+  const staleDb = new DatabaseSync(staleDbPath);
+  staleDb.exec(
+    "CREATE TABLE chunks (id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL); " +
+      "CREATE VIRTUAL TABLE chunk_search USING fts5(chunk_id UNINDEXED, text);",
+  );
+  staleDb.close();
+  writeFileSync(join(staleRoot, "note.md"), "# Hello\nWorld content here.");
+  const migrated = new PersonalNotesIndex(staleRoot, staleDbPath);
+  assert.equal(migrated.scan(), 1, "a pre-tags, pre-source_id database is dropped and rebuilt, not left broken");
+  assert.ok(migrated.search("world content here").length > 0, "search works immediately after the migration");
+  await migrated.close();
+  rmSync(staleRoot, { recursive: true, force: true });
 
   // A watcher picks up a create, an edit, and a delete on its own, without scan() called again.
   const watchedRoot = join(root, "watched");

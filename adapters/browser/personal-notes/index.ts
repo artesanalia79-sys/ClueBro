@@ -127,8 +127,19 @@ export class PersonalNotesIndex {
   ) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
+    // This index is a rebuildable cache of the Markdown on disk, never the
+    // source of truth -- so when an earlier version of this file left behind
+    // a `chunks` table missing a column a newer version expects (`tags`,
+    // `source_id`), the fix is to drop and let scan() repopulate it, not a
+    // hand-written column migration nobody will remember to run twice.
+    const existingColumns = new Set(
+      (this.db.prepare("PRAGMA table_info(chunks)").all() as { name: string }[]).map((c) => c.name),
+    );
+    if (existingColumns.size > 0 && (!existingColumns.has("tags") || !existingColumns.has("source_id"))) {
+      this.db.exec("DROP TABLE IF EXISTS chunk_search; DROP TABLE IF EXISTS chunks;");
+    }
     this.db.exec(`
-      PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS chunks (
         id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL,
         tags TEXT NOT NULL DEFAULT '[]', source_id TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
