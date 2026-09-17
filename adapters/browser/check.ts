@@ -194,6 +194,34 @@ try {
   await other.close();
   other = undefined;
 
+  // Dictated speech, once through a model, routinely comes back with a
+  // curly quote straightened or a doubled space collapsed -- a citation
+  // check strict about typography would refuse a perfectly real quote for
+  // reasons that have nothing to do with whether it was actually said.
+  other = new MeetingMemory(root, "typography-tolerant", async (events) => [
+    {
+      kind: "fact",
+      title: "Reads the Bible daily",
+      body: "Personal goal stated in the meeting.",
+      owner: null,
+      due: null,
+      // Straight quotes and single spaces, the way a model normalizes
+      // typography when it quotes -- the source line below has neither.
+      evidence: [{ event_id: events[0]!.event_id, quote: "I need to read the 'Bible' every day." }],
+    },
+  ]);
+  const typo = other.start("room", "Personal notes", "typography");
+  other.append(event(typo.id, "a", "For personal I  need to read the ‘Bible’ every day."));
+  await other.finish(typo.id);
+  assert.equal(
+    other.get(typo.id).processing_error,
+    null,
+    "a citation differing only in quote style or whitespace is accepted, not treated as fabricated",
+  );
+  assert.equal(other.get(typo.id).processed_count, 1);
+  await other.close();
+  other = undefined;
+
   const port = await new Promise<number>((resolve, reject) => {
     const probe = createServer();
     probe.on("error", reject);
